@@ -1,0 +1,118 @@
+# SSEDeploy 在 Kubernetes 集群内运行所需的命名空间与 RBAC
+# 应用：kubectl apply -f deploy/k8s/rbac.yaml
+---
+# 业务命名空间：平台上所有 Pod（Deployment + PVC）都创建在这里
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ssedeploy
+---
+# ServiceAccount：后端使用它访问 API Server（InCluster 配置）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ssedeploy
+  namespace: ssedeploy
+---
+# 命名空间级权限：Deployment / Pod / PVC / Event / 日志 / exec
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ssedeploy-role
+  namespace: ssedeploy
+rules:
+  # Deployment：列表、详情、创建、更新（启停/重启/改配置）、删除
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ReplicaSet：仅用于事件关联与排查
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  # Pod：列表与详情
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  # 日志 tab：实时拉取容器日志
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # 终端 tab：WebSSH 进入容器执行命令
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+  # 存储：创建/删除数据盘 PVC
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # 空目录卷等（Deployment 模板中引用，按需读取）
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  # 监控 tab：最近事件列表
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ssedeploy-rolebinding
+  namespace: ssedeploy
+subjects:
+  - kind: ServiceAccount
+    name: ssedeploy
+    namespace: ssedeploy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ssedeploy-role
+---
+# metrics-server 指标：PodMetrics 属于 metrics.k8s.io 组
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ssedeploy-metrics-role
+  namespace: ssedeploy
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ssedeploy-metrics-rolebinding
+  namespace: ssedeploy
+subjects:
+  - kind: ServiceAccount
+    name: ssedeploy
+    namespace: ssedeploy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ssedeploy-metrics-role
+---
+# 命名空间兜底：后端启动时会检查并尝试创建 ssedeploy 命名空间
+# （命名空间是集群级资源，Role 无法授权，因此仅授予 namespaces 的 get/create）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ssedeploy-namespace-role
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ssedeploy-namespace-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: ssedeploy
+    namespace: ssedeploy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ssedeploy-namespace-role

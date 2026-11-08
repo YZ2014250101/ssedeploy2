@@ -1,0 +1,54 @@
+# SSEDeploy 一键启动编排
+# 用法：docker compose up -d --build
+#
+# 说明：
+# 1. backend 需要访问 Kubernetes 集群，这里通过挂载 kubeconfig 实现（见 README「容器化启动」）。
+# 2. 若希望后端以后端 ServiceAccount 方式运行在集群内，请改用 deploy/k8s/ 下的清单。
+services:
+  backend:
+    build:
+      context: ./backend
+    image: ssedeploy/backend:latest
+    container_name: ssedeploy-backend
+    restart: unless-stopped
+    environment:
+      SSD_HTTP_ADDR: ":8080"
+      SSD_DB_PATH: "/app/data/ssedeploy.db"
+      # 集群内无法解析 0.0.0.0，容器内用 host.docker.internal 指回宿主机
+      SSD_KUBECONFIG: "/kube/config"
+      SSD_K8S_NAMESPACE: "ssedeploy"
+      # 首次启动用于创建管理员账号，登录后请尽快修改
+      SSD_ADMIN_USER: "admin"
+      SSD_ADMIN_PASSWORD: "admin123"
+      # 生产环境务必替换为随机长字符串
+      SSD_JWT_SECRET: "ssedeploy-dev-secret-please-change"
+      SSD_METRICS_INTERVAL: "15s"
+      TZ: "Asia/Shanghai"
+    volumes:
+      # SQLite 数据持久化
+      - ssedeploy-data:/app/data
+      # kubeconfig 只读挂载（Windows 为 %USERPROFILE%\.kube\config）
+      - ${KUBECONFIG_FILE:-~/.kube/config}:/kube/config:ro
+    ports:
+      # 仅容器直接暴露时使用；若通过前端 Nginx 访问可去掉
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    image: ssedeploy/frontend:latest
+    container_name: ssedeploy-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8000:80"
+
+volumes:
+  ssedeploy-data:

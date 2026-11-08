@@ -1,0 +1,212 @@
+import { useCallback, useEffect, useState } from "react"
+import { useNavigate, useParams, useSearchParams } from "react-router-dom"
+import { ArrowLeft, Code2, Loader2, Play, RotateCw, Sparkles, Square } from "lucide-react"
+import { toast } from "sonner"
+import { podApi, type PodDetail as PodDetailType } from "@/api/pod"
+import { Button } from "@/components/ui/button"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Skeleton } from "@/components/ui/skeleton"
+import { StatusBadge } from "@/components/pod/StatusBadge"
+import { FeatureDialog } from "@/components/common/FeatureDialog"
+import { ComingSoon } from "@/components/pod/ComingSoon"
+import { MonitorTab } from "./pod-tabs/MonitorTab"
+import { TerminalTab } from "./pod-tabs/TerminalTab"
+import { LogsTab } from "./pod-tabs/LogsTab"
+import { SettingsTab } from "./pod-tabs/SettingsTab"
+import { formatTime } from "@/lib/format"
+
+// 详情页 13 个 Tab，第一阶段只实现 4 个
+const TABS = [
+  { value: "monitor", label: "监控" },
+  { value: "connect", label: "连接" },
+  { value: "terminal", label: "终端" },
+  { value: "files", label: "文件" },
+  { value: "logs", label: "日志" },
+  { value: "applogs", label: "应用日志" },
+  { value: "credentials", label: "凭证" },
+  { value: "domain", label: "子域名" },
+  { value: "deploy", label: "部署" },
+  { value: "profile", label: "项目画像" },
+  { value: "usage", label: "用量" },
+  { value: "members", label: "成员" },
+  { value: "settings", label: "设置" },
+]
+
+const READY_TABS = new Set(["monitor", "terminal", "logs", "settings"])
+
+export default function PodDetail() {
+  const { name = "" } = useParams()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const [detail, setDetail] = useState<PodDetailType | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [feature, setFeature] = useState<string | null>(null)
+
+  const tab = searchParams.get("tab") || "monitor"
+
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true)
+      try {
+        const result = await podApi.get(name)
+        setDetail(result)
+      } catch (error) {
+        toast.error((error as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [name],
+  )
+
+  useEffect(() => {
+    load()
+    // 轮询详情，保证状态与副本数实时更新
+    const timer = setInterval(() => load(true), 15000)
+    return () => clearInterval(timer)
+  }, [load])
+
+  async function handleToggle() {
+    if (!detail) return
+    setBusy(true)
+    try {
+      if (detail.status === "running") {
+        await podApi.stop(detail.name)
+        toast.success("Pod 已停止")
+      } else {
+        await podApi.start(detail.name)
+        toast.success("Pod 已启动")
+      }
+      await load(true)
+    } catch (error) {
+      toast.error((error as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRestart() {
+    if (!detail) return
+    setBusy(true)
+    try {
+      await podApi.restart(detail.name)
+      toast.success("Pod 正在重启")
+      await load(true)
+    } catch (error) {
+      toast.error((error as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (loading && !detail) {
+    return (
+      <div className="mx-auto max-w-7xl space-y-4">
+        <Skeleton className="h-10 w-64" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-72 w-full" />
+      </div>
+    )
+  }
+
+  if (!detail) {
+    return (
+      <div className="mx-auto max-w-7xl rounded-xl border border-slate-200 bg-white p-16 text-center text-sm text-slate-500">
+        未找到该 Pod
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-7xl space-y-4">
+      {/* 头部：返回 + 名称 + 操作按钮 */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <Button variant="ghost" size="icon" onClick={() => navigate("/pods")} title="返回">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-xl font-semibold text-slate-900">{detail.name}</h1>
+              <StatusBadge status={detail.status} />
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-slate-400">
+              <span className="font-mono">{detail.spec}</span>
+              <span>{detail.image}</span>
+              <span>创建于 {formatTime(detail.createdAt)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setFeature("IDE")}>
+            <Code2 className="h-4 w-4" />
+            IDE
+          </Button>
+          <Button
+            variant={detail.status === "running" ? "outline" : "default"}
+            disabled={busy || detail.status === "notfound"}
+            onClick={handleToggle}
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : detail.status === "running" ? (
+              <Square className="h-4 w-4" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+            {detail.status === "running" ? "停止" : "启动"}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={busy || detail.status !== "running"}
+            onClick={handleRestart}
+          >
+            <RotateCw className="h-4 w-4" />
+            重启
+          </Button>
+          <Button variant="outline" onClick={() => setFeature("AI 助手")}>
+            <Sparkles className="h-4 w-4" />
+            AI 助手
+          </Button>
+        </div>
+      </div>
+
+      {/* Tab 导航 */}
+      <Tabs
+        value={tab}
+        onValueChange={(value) => setSearchParams({ tab: value }, { replace: true })}
+      >
+        <div className="overflow-x-auto">
+          <TabsList className="w-max min-w-full">
+            {TABS.map((item) => (
+              <TabsTrigger key={item.value} value={item.value}>
+                {item.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+      </Tabs>
+
+      {/* Tab 内容 */}
+      <div>
+        {tab === "monitor" && <MonitorTab name={detail.name} />}
+        {tab === "terminal" && <TerminalTab name={detail.name} />}
+        {tab === "logs" && <LogsTab name={detail.name} />}
+        {tab === "settings" && (
+          <SettingsTab
+            key={detail.name}
+            detail={detail}
+            onUpdated={() => load(true)}
+            onDeleted={() => navigate("/pods", { replace: true })}
+          />
+        )}
+        {!READY_TABS.has(tab) && <ComingSoon title={TABS.find((item) => item.value === tab)?.label || "该模块"} />}
+      </div>
+
+      <FeatureDialog open={feature !== null} onOpenChange={(open) => !open && setFeature(null)} title={feature || ""} />
+    </div>
+  )
+}

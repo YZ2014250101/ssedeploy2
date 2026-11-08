@@ -1,0 +1,120 @@
+// Package store 封装 SQLite 数据访问：建表、初始化管理员、各业务表的读写。
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite" // 纯 Go 实现的 SQLite 驱动，无需 CGO，方便容器化
+
+	"ssedeploy/internal/config"
+)
+
+// ErrNotFound 表示查询的记录不存在，handler 层据此返回 404。
+var ErrNotFound = errors.New("记录不存在")
+
+// Store 持有数据库连接。
+type Store struct {
+	DB *sql.DB
+}
+
+// schema 为全部建表语句，使用 IF NOT EXISTS 保证重复启动幂等。
+const schema = `
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  display_name  TEXT NOT NULL DEFAULT '',
+  role          TEXT NOT NULL DEFAULT 'admin',
+  created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS pod_metas (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace  TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  owner_id   INTEGER NOT NULL,
+  image      TEXT NOT NULL,
+  cpu        TEXT NOT NULL,
+  memory     TEXT NOT NULL,
+  disk       TEXT NOT NULL,
+  replicas   INTEGER NOT NULL DEFAULT 1,
+  env        TEXT NOT NULL DEFAULT '[]',
+  command    TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(namespace, name)
+);
+
+CREATE TABLE IF NOT EXISTS metric_samples (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace TEXT NOT NULL,
+  name      TEXT NOT NULL,
+  cpu_milli INTEGER NOT NULL,
+  mem_bytes INTEGER NOT NULL,
+  ts        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_samp ON metric_samples(namespace, name, ts);
+`
+
+// New 打开数据库、建表并在首次启动时创建管理员账号。
+func New(cfg *config.Config) (*Store, error) {
+	// 确保数据库所在目录存在（容器里通常是 /data）
+	if dir := filepath.Dir(cfg.DBPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("创建数据目录失败: %w", err)
+		}
+	}
+
+	// WAL 模式提升并发读性能，busy_timeout 避免瞬时锁冲突
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", cfg.DBPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开数据库失败: %w", err)
+	}
+	// 单连接写入，规避 SQLite 写锁竞争
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec(schema); err != nil {
+		return nil, fmt.Errorf("初始化表结构失败: %w", err)
+	}
+
+	s := &Store{DB: db}
+	if err := s.seedAdmin(cfg.DefaultAdmin, cfg.DefaultPassword); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Close 关闭数据库连接。
+func (s *Store) Close() error {
+	return s.DB.Close()
+}
+
+// seedAdmin 在没有用户时创建默认管理员，密码使用 bcrypt 哈希存储。
+func (s *Store) seedAdmin(username, password string) error {
+	var count int
+	if err := s.DB.QueryRow(`SELECT COUNT(1) FROM users`).Scan(&count); err != nil {
+		return fmt.Errorf("统计用户失败: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("生成密码哈希失败: %w", err)
+	}
+	_, err = s.DB.Exec(
+		`INSERT INTO users(username, password_hash, display_name, role) VALUES(?, ?, ?, ?)`,
+		username, string(hash), "管理员", "admin",
+	)
+	if err != nil {
+		return fmt.Errorf("创建默认管理员失败: %w", err)
+	}
+	return nil
+}
