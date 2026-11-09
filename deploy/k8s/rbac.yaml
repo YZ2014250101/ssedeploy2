@@ -93,16 +93,24 @@ roleRef:
   kind: Role
   name: ssedeploy-metrics-role
 ---
-# 命名空间兜底：后端启动时会检查并尝试创建 ssedeploy 命名空间
-# （命名空间是集群级资源，Role 无法授权，因此仅授予 namespaces 的 get/create）
+# 集群级只读权限：概览页需要读取节点与命名空间
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: ssedeploy-namespace-role
 rules:
+  # 命名空间：概览页统计分组数量，启动时兜底创建业务命名空间
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create"]
+    verbs: ["get", "list", "create"]
+  # 节点：概览页统计节点数量、Ready 状态与 K3s 版本
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  # 全局 Pod 统计（运行 / 总数）
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

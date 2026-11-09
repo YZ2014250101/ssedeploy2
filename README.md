@@ -173,6 +173,8 @@ kubectl apply -f deploy/k8s/rbac.yaml
 | --- | --- | --- |
 | POST | `/auth/login` | 登录，返回 token 与用户信息 |
 | GET | `/auth/me` | 当前登录用户 |
+| GET | `/overview` | 概览页聚合数据（别名 `/api/overview`） |
+| GET | `/host/:nodeName` | 主机健康详情（`self` 表示后端所在节点，别名 `/api/host/:nodeName`） |
 | GET | `/pods` | Pod 列表（`keyword`、`status` 过滤） |
 | GET | `/pods/stats` | 顶部四个统计数字 |
 | POST | `/pods` | 创建 Pod（Deployment + PVC） |
@@ -190,6 +192,38 @@ kubectl apply -f deploy/k8s/rbac.yaml
 
 响应统一为 `{ code, message, data }`，`code=0` 表示成功。WebSocket 鉴权使用 `?token=<jwt>`。
 
+### 6.1 概览数据来源
+
+| 卡片字段 | 数据来源 |
+| --- | --- |
+| 运行 Pod / 集群信息 | client-go 读取集群 Pod、Node、Namespace（无集群级权限时退回业务命名空间） |
+| CPU 负载(1m) | 宿主机 `/proc/loadavg`，仅 Linux 可用；Windows/macOS 显示 `--` |
+| 内存使用 | Linux：`/proc/meminfo`；Windows：`GlobalMemoryStatusEx` |
+| 磁盘使用(/) | Linux：`statfs("/")`；Windows：系统盘 `GetDiskFreeSpaceEx`（容器部署时对应容器根文件系统） |
+| GPU 总数与每卡利用率/显存 | 调用后端所在节点的 `nvidia-smi`，未安装或无卡时返回空列表 |
+| 攻防攻击/封禁 | 后续阶段接入，当前固定 0 |
+
+前端每 3 秒轮询 `/api/v1/overview` 刷新数据。
+
+### 6.2 主机健康数据来源
+
+`GET /api/v1/host/:nodeName` 返回一次性的实时指标 + 最多 120 个采样点的时序数组（每 3 秒采样一次，保留最近 6 分钟）。
+
+| 页面区块 | 数据来源 |
+| --- | --- |
+| 系统信息（操作系统 / 内核 / 架构 / CPU 核数 / K3s 版本） | `Node.Status.NodeInfo`、`Node.Status.Capacity` |
+| 运行时间 / 负载均值 / Swap | Linux `/proc/uptime`、`/proc/loadavg`、`/proc/meminfo`；Windows 仅运行时间与内存 |
+| CPU / 内存 / 磁盘（/）百分比 | Linux `/proc/stat`、`/proc/meminfo`、`statfs("/")`；Windows `GetSystemTimes`、`GlobalMemoryStatusEx` |
+| 网络吞吐 / 丢包率 | Linux `/proc/net/dev` 累计计数差值（排除 lo 与虚拟网卡）；Windows `GetIfTable2` 64 位计数 |
+| 磁盘 IO / IOPS / await / 繁忙 | Linux `/proc/diskstats` 累计计数差值 |
+| 磁盘使用分区列表 | Linux `/proc/mounts` + `statfs` 过滤真实文件系统；Windows 仅系统盘 |
+| Pod 数 | client-go `pods`（`spec.nodeName` 字段选择器）统计 Running |
+| K3s 节点列表 | `nodes` 的 Ready 与 Disk/Memory/PIDPressure 条件 |
+| GPU 总数 / 驱动版本 | 后端所在节点 `nvidia-smi` |
+
+> **多节点限制**：`/proc` 与 `nvidia-smi` 只能采集到后端所在节点的数据。请求非采集器所在节点时，接口仍返回该节点的 Kubernetes Node 信息（系统信息、节点列表、Pod 数），但实时指标与折线图为空，页面会提示「当前节点不是后端所在节点」。
+
+
 ## 7. 业务规则说明
 
 - **Deployment 承载**：页面上的一切 "Pod" 实际是一个 Deployment（1 副本）+ 一个 PVC（数据盘，挂载 `/data`），名称对用户唯一。
@@ -202,6 +236,10 @@ kubectl apply -f deploy/k8s/rbac.yaml
 
 | 现象 | 排查方向 |
 | --- | --- |
+| 概览「CPU 负载(1m)」显示 `--` | 负载均值只有 Linux 才提供；容器化部署（Linux 镜像）即可正常显示 |
+| 主机页负载/磁盘 IO 曲线全为 0 | Windows 本地不提供负载与磁盘 IO 计数；网络吞吐已通过 `GetIfTable2` 支持，Linux 容器部署后 `/proc` 采集完整生效 |
+| 概览没有 GPU 卡片 | 后端所在节点需有 NVIDIA 显卡与驱动，且 `nvidia-smi` 在 PATH 中：`nvidia-smi --query-gpu=index,name --format=csv` |
+| 概览 Pod 数与实际不符 | 无集群级 RBAC 时会退回业务命名空间统计，请为 ServiceAccount 补 `nodes` / `namespaces` / `pods` 的 list 权限 |
 | 监控 tab 无数据 | `kubectl top pods -n ssedeploy` 是否正常；metrics-server 是否加了 `--kubelet-insecure-tls` |
 | 创建 Pod 报 PVC 错误 | 集群是否有默认 StorageClass：`kubectl get sc`，或用 `SSD_STORAGE_CLASS` 指定 |
 | 终端 / 日志一直连接中 | 反向代理是否开启 WebSocket 升级（Nginx 配置已包含 `Upgrade` 头） |

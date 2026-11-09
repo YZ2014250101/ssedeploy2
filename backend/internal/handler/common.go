@@ -16,14 +16,18 @@ import (
 
 // Handler 汇总所有接口依赖。
 type Handler struct {
-	Pods  *k8s.PodService
-	Store *store.Store
-	Cfg   *config.Config
+	Pods        *k8s.PodService
+	OverviewSvc *k8s.OverviewService
+	HostSvc     *k8s.HostService
+	GPUSvc      *k8s.GPUService
+	ClusterSvc  *k8s.ClusterService
+	Store       *store.Store
+	Cfg         *config.Config
 }
 
 // New 创建接口处理器。
-func New(pods *k8s.PodService, st *store.Store, cfg *config.Config) *Handler {
-	return &Handler{Pods: pods, Store: st, Cfg: cfg}
+func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, st *store.Store, cfg *config.Config) *Handler {
+	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, Store: st, Cfg: cfg}
 }
 
 // OK 统一成功响应：{code:0, message:"ok", data:...}

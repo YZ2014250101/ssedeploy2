@@ -29,14 +29,27 @@ func main() {
 		log.Fatalf("初始化 Kubernetes 客户端失败: %v", err)
 	}
 	podService := k8s.NewPodService(client, st)
+	overviewService := k8s.NewOverviewService(client)
+	hostService := k8s.NewHostService(client)
+	gpuService := k8s.NewGPUService(client)
+	clusterService := k8s.NewClusterService(client)
 
 	// 3. 后台定时采样 metrics-server，供监控折线图使用
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runMetricsSampler(ctx, podService, st, cfg.MetricsInterval)
 
+	// 主机指标采样：每 3 秒一次，保留最近 120 个采样点
+	hostService.Start(ctx)
+
+	// GPU 指标采样：每 3 秒一次，保留最近 120 个采样点
+	gpuService.Start(ctx)
+
+	// 集群页指标采样：每 15 秒一次，保留 7 天数据供多粒度聚合
+	clusterService.Start(ctx)
+
 	// 4. 启动 HTTP 服务
-	h := handler.New(podService, st, cfg)
+	h := handler.New(podService, overviewService, hostService, gpuService, clusterService, st, cfg)
 	r := router.New(cfg, h)
 	log.Printf("SSEDeploy 已启动：%s（命名空间 %s）", cfg.HTTPAddr, cfg.Namespace)
 	if err := r.Run(cfg.HTTPAddr); err != nil {

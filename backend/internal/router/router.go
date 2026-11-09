@@ -47,6 +47,21 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 	{
 		auth.GET("/auth/me", h.Me)
 
+		// 概览页聚合数据
+		auth.GET("/overview", h.Overview)
+
+		// 主机健康详情（nodeName 传 self 表示后端所在节点）
+		auth.GET("/host/:nodeName", h.HostDetail)
+
+		// 节点平均负载（/proc/loadavg）
+		auth.GET("/node/health", h.NodeHealth)
+
+		// 个人管理页账户信息
+		auth.GET("/user/profile", h.UserProfile)
+
+		// GPU 监控页聚合数据
+		auth.GET("/gpu", h.GPUOverview)
+
 		// Pod 管理
 		auth.GET("/pods", h.ListPods)
 		auth.GET("/pods/stats", h.PodStats)
@@ -68,6 +83,25 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 
 		// WebSSH
 		auth.GET("/pods/:name/terminal", h.Terminal)
+	}
+
+	// 概览接口同时保留 /api/overview 别名，兼容对外文档中给出的路径
+	alias := r.Group("/api")
+	alias.Use(middleware.Auth(cfg.JWTSecret))
+	alias.GET("/overview", h.Overview)
+	alias.GET("/host/:nodeName", h.HostDetail)
+	alias.GET("/node/health", h.NodeHealth)
+	alias.GET("/user/profile", h.UserProfile)
+	alias.GET("/gpu", h.GPUOverview)
+
+	// 集群页接口：使用独立统一响应结构 { code, msg, data }
+	cluster := r.Group("/api/cluster")
+	cluster.Use(middleware.Auth(cfg.JWTSecret))
+	{
+		cluster.GET("/nodes", h.ClusterNodes)
+		cluster.GET("/metrics", h.ClusterMetrics)
+		cluster.GET("/node/:nodeName/gpus", h.ClusterGPUs)
+		cluster.GET("/node/:nodeName/gpu-metrics", h.ClusterGPUMetrics)
 	}
 
 	r.NoRoute(func(c *gin.Context) {

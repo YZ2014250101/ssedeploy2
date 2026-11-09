@@ -4,6 +4,11 @@ import { Toaster } from "sonner"
 import { getToken } from "@/lib/auth"
 import AppLayout from "@/components/layout/AppLayout"
 import Login from "@/pages/Login"
+import Overview from "@/pages/Overview"
+import HostHealth from "@/pages/HostHealth"
+import GpuMonitor from "@/pages/GpuMonitor"
+import Profile from "@/pages/Profile"
+import Cluster from "@/pages/Cluster"
 import PodList from "@/pages/PodList"
 import PodDetail from "@/pages/PodDetail"
 
@@ -20,6 +25,7 @@ export default function App() {
     <>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* 集群页为独立全屏页面，自带白色侧边导航栏 */}
         <Route
           element={
             <RequireAuth>
@@ -27,11 +33,17 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Navigate to="/pods" replace />} />
+          {/* 默认进入概览页 */}
+          <Route index element={<Overview />} />
+          <Route path="/overview" element={<Navigate to="/" replace />} />
+          <Route path="/hosts" element={<HostHealth />} />
+          <Route path="/cluster" element={<Cluster />}/>
+          <Route path="/gpu" element={<GpuMonitor />} />
+          <Route path="/profile" element={<Profile />} />
           <Route path="/pods" element={<PodList />} />
           <Route path="/pods/:name" element={<PodDetail />} />
         </Route>
-        <Route path="*" element={<Navigate to="/pods" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster position="top-center" richColors />
     </>

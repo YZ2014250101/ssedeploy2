@@ -18,3 +18,14 @@ func (u *User) Display() string {
 	}
 	return u.Username
 }
+
+// UserProfile 是 GET /api/user/profile 返回的个人管理页数据。
+type UserProfile struct {
+	UID             string `json:"uid"`             // 平台展示用用户 ID，格式 uni_<id>
+	Username        string `json:"username"`        // 登录账号
+	Role            string `json:"role"`            // 角色，例如 admin
+	PermissionCount int    `json:"permissionCount"` // 权限数量（按角色映射）
+	DisplayName     string `json:"displayName"`     // 显示名
+	Email           string `json:"email"`           // 邮箱
+	Theme           string `json:"theme"`           // 主题默认值；实际偏好保存在浏览器 localStorage
+}

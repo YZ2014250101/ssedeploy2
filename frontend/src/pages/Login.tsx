@@ -26,7 +26,7 @@ export default function Login() {
       const data = await authApi.login(username, password)
       saveAuth(data.token, data.user)
       toast.success("登录成功")
-      navigate("/pods", { replace: true })
+      navigate("/", { replace: true })
     } catch (error) {
       toast.error((error as Error).message)
     } finally {

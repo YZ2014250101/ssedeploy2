@@ -35,7 +35,7 @@ export function PodTable({ items, loading, busy, onToggle, onRestart, onDelete }
   return (
     <Table>
       <TableHeader>
-        <TableRow className="bg-slate-50/70 hover:bg-slate-50/70">
+        <TableRow className="hover:bg-slate-50/70">
           <TableHead className="w-32">状态</TableHead>
           <TableHead>名称</TableHead>
           <TableHead className="w-40">规格</TableHead>
