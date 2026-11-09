@@ -65,6 +65,9 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		// Pod 管理
 		auth.GET("/pods", h.ListPods)
 		auth.GET("/pods/stats", h.PodStats)
+
+		// IDE 工作台：当前用户自己的 Pod 列表
+		auth.GET("/ide/pods", h.IDEPods)
 		auth.POST("/pods", h.CreatePod)
 		auth.GET("/pods/:name", h.GetPod)
 		auth.PUT("/pods/:name", h.UpdatePod)
@@ -83,6 +86,13 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 
 		// WebSSH
 		auth.GET("/pods/:name/terminal", h.Terminal)
+
+		// 管理员专属接口：存储大盘
+		admin := auth.Group("/admin")
+		admin.Use(middleware.RequireAdmin(h.Store))
+		{
+			admin.GET("/storage", h.AdminStorage)
+		}
 	}
 
 	// 概览接口同时保留 /api/overview 别名，兼容对外文档中给出的路径

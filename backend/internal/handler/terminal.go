@@ -57,6 +57,12 @@ func (q *sizeQueue) Next() *remotecommand.TerminalSize {
 
 // Terminal 建立 WebSSH：WebSocket <-> SPDY exec。
 func (h *Handler) Terminal(c *gin.Context) {
+	// 权限校验：只能进入自己创建的 Pod 终端
+	if err := h.Pods.EnsureOwner(c.Request.Context(), c.Param("name"), currentUserID(c)); err != nil {
+		respondErr(c, err)
+		return
+	}
+
 	shell := c.DefaultQuery("shell", "/bin/sh")
 
 	ws, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
@@ -107,6 +113,12 @@ func (h *Handler) Terminal(c *gin.Context) {
 
 // StreamLogs 建立实时日志 WebSocket：服务端持续推送日志文本。
 func (h *Handler) StreamLogs(c *gin.Context) {
+	// 权限校验：只能查看自己创建的 Pod 日志
+	if err := h.Pods.EnsureOwner(c.Request.Context(), c.Param("name"), currentUserID(c)); err != nil {
+		respondErr(c, err)
+		return
+	}
+
 	ws, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return

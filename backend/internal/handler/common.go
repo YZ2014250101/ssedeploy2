@@ -21,13 +21,14 @@ type Handler struct {
 	HostSvc     *k8s.HostService
 	GPUSvc      *k8s.GPUService
 	ClusterSvc  *k8s.ClusterService
+	StorageSvc  *k8s.StorageService
 	Store       *store.Store
 	Cfg         *config.Config
 }
 
 // New 创建接口处理器。
-func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, st *store.Store, cfg *config.Config) *Handler {
-	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, Store: st, Cfg: cfg}
+func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, st *store.Store, cfg *config.Config) *Handler {
+	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, Store: st, Cfg: cfg}
 }
 
 // OK 统一成功响应：{code:0, message:"ok", data:...}
@@ -52,6 +53,8 @@ func respondErr(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound), apierrors.IsNotFound(err):
 		Fail(c, http.StatusNotFound, "资源不存在")
+	case errors.Is(err, k8s.ErrPodForbidden):
+		Fail(c, http.StatusForbidden, "无权访问该 Pod")
 	case apierrors.IsAlreadyExists(err):
 		Fail(c, http.StatusConflict, "资源已存在")
 	default:

@@ -33,6 +33,7 @@ func main() {
 	hostService := k8s.NewHostService(client)
 	gpuService := k8s.NewGPUService(client)
 	clusterService := k8s.NewClusterService(client)
+	storageService := k8s.NewStorageService(client)
 
 	// 3. 后台定时采样 metrics-server，供监控折线图使用
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,7 +50,7 @@ func main() {
 	clusterService.Start(ctx)
 
 	// 4. 启动 HTTP 服务
-	h := handler.New(podService, overviewService, hostService, gpuService, clusterService, st, cfg)
+	h := handler.New(podService, overviewService, hostService, gpuService, clusterService, storageService, st, cfg)
 	r := router.New(cfg, h)
 	log.Printf("SSEDeploy 已启动：%s（命名空间 %s）", cfg.HTTPAddr, cfg.Namespace)
 	if err := r.Run(cfg.HTTPAddr); err != nil {

@@ -9,6 +9,8 @@ import HostHealth from "@/pages/HostHealth"
 import GpuMonitor from "@/pages/GpuMonitor"
 import Profile from "@/pages/Profile"
 import Cluster from "@/pages/Cluster"
+import Storage from "@/pages/Storage"
+import IDE from "@/pages/IDE"
 import PodList from "@/pages/PodList"
 import PodDetail from "@/pages/PodDetail"
 
@@ -27,6 +29,23 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         {/* 集群页为独立全屏页面，自带白色侧边导航栏 */}
         <Route
+          path="/cluster"
+          element={
+            <RequireAuth>
+              <Cluster />
+            </RequireAuth>
+          }
+        />
+        {/* IDE 工作台为独立全屏页面，自带深色顶栏，不渲染通用侧边栏 */}
+        <Route
+          path="/ide"
+          element={
+            <RequireAuth>
+              <IDE />
+            </RequireAuth>
+          }
+        />
+        <Route
           element={
             <RequireAuth>
               <AppLayout />
@@ -37,8 +56,8 @@ export default function App() {
           <Route index element={<Overview />} />
           <Route path="/overview" element={<Navigate to="/" replace />} />
           <Route path="/hosts" element={<HostHealth />} />
-          <Route path="/cluster" element={<Cluster />}/>
           <Route path="/gpu" element={<GpuMonitor />} />
+          <Route path="/storage" element={<Storage />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/pods" element={<PodList />} />
           <Route path="/pods/:name" element={<PodDetail />} />

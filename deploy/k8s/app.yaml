@@ -1,0 +1,191 @@
+# SSEDeploy 应用清单（后端 API + 前端 Nginx）
+#
+# 部署顺序：
+#   1. kubectl apply -f deploy/k8s/rbac.yaml   # 命名空间、ServiceAccount、RBAC
+#   2. kubectl apply -f deploy/k8s/app.yaml    # 应用工作负载
+#
+# 前置条件：
+#   - 镜像已构建并推送到集群可拉取的仓库（默认 ssedeploy/backend:latest、ssedeploy/frontend:latest）
+#   - 集群已安装 metrics-server（Pod 监控图表依赖）
+#   - 若使用本地镜像（如 k3d），请先执行：
+#       k3d image import ssedeploy/backend:latest ssedeploy/frontend:latest -c <集群名>
+#     并将下面两个 imagePullPolicy 改为 IfNotPresent（已默认设置）
+#
+# 说明：后端通过 ServiceAccount ssedeploy 访问 kube-apiserver，
+#       不使用 kubeconfig 挂载，因此无需任何宿主机文件。
+---
+# 后端 SQLite 数据库持久化卷
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ssedeploy-data
+  namespace: ssedeploy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # 留空表示使用集群默认 StorageClass（K3s 默认为 local-path）
+  # storageClassName: local-path
+---
+# 后端 API：Gin + client-go，提供 Pod 管理、终端与日志 WebSocket
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssedeploy-backend
+  namespace: ssedeploy
+  labels:
+    app: ssedeploy-backend
+spec:
+  replicas: 1
+  # SQLite 为单文件数据库，必须使用 Recreate，避免两个副本同时写同一个卷
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ssedeploy-backend
+  template:
+    metadata:
+      labels:
+        app: ssedeploy-backend
+    spec:
+      # 使用 rbac.yaml 中创建的 ServiceAccount，具备 Pod/Deployment/PVC/exec/log 权限
+      serviceAccountName: ssedeploy
+      containers:
+        - name: backend
+          image: ssedeploy/backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # HTTP 监听地址
+            - name: SSD_HTTP_ADDR
+              value: ":8080"
+            # SQLite 数据库文件（挂载在持久卷上）
+            - name: SSD_DB_PATH
+              value: "/app/data/ssedeploy.db"
+            # 业务命名空间：平台创建的 Deployment/PVC 都在这里
+            - name: SSD_K8S_NAMESPACE
+              value: "ssedeploy"
+            # 首次启动创建的管理员账号（登录后请尽快修改密码）
+            - name: SSD_ADMIN_USER
+              value: "admin"
+            - name: SSD_ADMIN_PASSWORD
+              value: "admin123"
+            # JWT 签名密钥：生产环境务必替换为随机长字符串
+            - name: SSD_JWT_SECRET
+              value: "ssedeploy-dev-secret-please-change"
+            # metrics-server 采样间隔
+            - name: SSD_METRICS_INTERVAL
+              value: "15s"
+            - name: TZ
+              value: "Asia/Shanghai"
+          # 就绪探针：健康检查通过后才接入流量
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ssedeploy-data
+---
+# 后端 Service：名称必须为 backend，前端 Nginx upstream 依赖该 DNS 名
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: ssedeploy
+  labels:
+    app: ssedeploy-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: ssedeploy-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# 前端：Nginx 托管静态资源，/api 反向代理到 backend（含 WebSocket 升级）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssedeploy-frontend
+  namespace: ssedeploy
+  labels:
+    app: ssedeploy-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ssedeploy-frontend
+  template:
+    metadata:
+      labels:
+        app: ssedeploy-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ssedeploy/frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+# 前端 Service：NodePort 暴露，K3s 下通过 <节点IP>:30080 访问
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssedeploy-frontend
+  namespace: ssedeploy
+  labels:
+    app: ssedeploy-frontend
+spec:
+  type: NodePort
+  selector:
+    app: ssedeploy-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080
