@@ -68,6 +68,14 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 
 		// IDE 工作台：当前用户自己的 Pod 列表
 		auth.GET("/ide/pods", h.IDEPods)
+		// IDE 工作区文件：与终端共用同一个 PVC（/home/workspace）
+		auth.GET("/ide/pods/:name/files", h.IDEFiles)
+		auth.POST("/ide/pods/:name/files", h.IDECreateEntry)       // 新建文件/文件夹
+		auth.GET("/ide/pods/:name/file", h.IDEFile)
+		auth.PUT("/ide/pods/:name/file", h.IDEFileSave)
+		auth.PATCH("/ide/pods/:name/file", h.IDERenameEntry)       // 重命名
+		auth.DELETE("/ide/pods/:name/file", h.IDEDeleteEntry)      // 删除
+		auth.GET("/ide/pods/:name/download", h.IDEDownload)        // 下载文件流
 		auth.POST("/pods", h.CreatePod)
 		auth.GET("/pods/:name", h.GetPod)
 		auth.PUT("/pods/:name", h.UpdatePod)
@@ -86,6 +94,18 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 
 		// WebSSH
 		auth.GET("/pods/:name/terminal", h.Terminal)
+
+		// 全局共享目录（/shared）：所有登录用户可见、可读写
+		shared := auth.Group("/shared")
+		{
+			shared.GET("/list", h.SharedList)        // 目录列表
+			shared.POST("/mkdir", h.SharedMkdir)     // 新建目录
+			shared.POST("/upload", h.SharedUpload)   // 上传文件（多选）
+			shared.DELETE("/rm", h.SharedRemove)     // 删除文件/目录
+			shared.PATCH("/rename", h.SharedRename)  // 重命名
+			shared.GET("/download", h.SharedDownload) // 下载（目录自动打包 zip）
+			shared.GET("/ai/insight", h.SharedInsight) // AI 洞察摘要
+		}
 
 		// 管理员专属接口：存储大盘
 		admin := auth.Group("/admin")

@@ -10,6 +10,7 @@ import (
 	"ssedeploy/internal/handler"
 	"ssedeploy/internal/k8s"
 	"ssedeploy/internal/router"
+	"ssedeploy/internal/shared"
 	"ssedeploy/internal/store"
 )
 
@@ -35,9 +36,23 @@ func main() {
 	clusterService := k8s.NewClusterService(client)
 	storageService := k8s.NewStorageService(client)
 
-	// 3. 后台定时采样 metrics-server，供监控折线图使用
+	// 全局共享目录服务：所有用户、所有 Pod 共用同一个 /shared 数据卷
+	sharedService, err := shared.New(cfg.SharedDir)
+	if err != nil {
+		log.Fatalf("初始化共享目录失败: %v", err)
+	}
+	log.Printf("共享目录：%s", sharedService.Root())
+
+	// 3. 修复历史 Pod 的工作区挂载（PVC -> /home/workspace），幂等执行
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if repaired, err := podService.RepairWorkspaces(ctx); err != nil {
+		log.Printf("修复历史 Pod 工作区失败: %v", err)
+	} else if repaired > 0 {
+		log.Printf("已修复 %d 个 Pod 的工作区挂载", repaired)
+	}
+
+	// 4. 后台定时采样 metrics-server，供监控折线图使用
 	go runMetricsSampler(ctx, podService, st, cfg.MetricsInterval)
 
 	// 主机指标采样：每 3 秒一次，保留最近 120 个采样点
@@ -50,7 +65,7 @@ func main() {
 	clusterService.Start(ctx)
 
 	// 4. 启动 HTTP 服务
-	h := handler.New(podService, overviewService, hostService, gpuService, clusterService, storageService, st, cfg)
+	h := handler.New(podService, overviewService, hostService, gpuService, clusterService, storageService, sharedService, st, cfg)
 	r := router.New(cfg, h)
 	log.Printf("SSEDeploy 已启动：%s（命名空间 %s）", cfg.HTTPAddr, cfg.Namespace)
 	if err := r.Run(cfg.HTTPAddr); err != nil {

@@ -11,6 +11,7 @@ import Profile from "@/pages/Profile"
 import Cluster from "@/pages/Cluster"
 import Storage from "@/pages/Storage"
 import IDE from "@/pages/IDE"
+import Shared from "@/pages/Shared"
 import PodList from "@/pages/PodList"
 import PodDetail from "@/pages/PodDetail"
 
@@ -27,37 +28,17 @@ export default function App() {
     <>
       <Routes>
         <Route path="/login" element={<Login />} />
-        {/* 集群页为独立全屏页面，自带白色侧边导航栏 */}
-        <Route
-          path="/cluster"
-          element={
-            <RequireAuth>
-              <Cluster />
-            </RequireAuth>
-          }
-        />
         {/* IDE 工作台为独立全屏页面，自带深色顶栏，不渲染通用侧边栏 */}
-        <Route
-          path="/ide"
-          element={
-            <RequireAuth>
-              <IDE />
-            </RequireAuth>
-          }
-        />
-        <Route
-          element={
-            <RequireAuth>
-              <AppLayout />
-            </RequireAuth>
-          }
-        >
+        <Route path="/ide" element={ <RequireAuth> <IDE /> </RequireAuth> } />
+        <Route element={ <RequireAuth> <AppLayout /> </RequireAuth> } >
           {/* 默认进入概览页 */}
           <Route index element={<Overview />} />
           <Route path="/overview" element={<Navigate to="/" replace />} />
           <Route path="/hosts" element={<HostHealth />} />
+          <Route path="/cluster" element={<Cluster />} />
           <Route path="/gpu" element={<GpuMonitor />} />
           <Route path="/storage" element={<Storage />} />
+          <Route path="/shared" element={<Shared />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/pods" element={<PodList />} />
           <Route path="/pods/:name" element={<PodDetail />} />

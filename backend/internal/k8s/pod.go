@@ -257,6 +257,11 @@ func (s *PodService) Create(ctx context.Context, req model.CreatePodRequest, own
 		return err
 	}
 
+	// 全局共享目录 PVC：所有用户 Pod 共用同一个 /shared 数据卷
+	if err := s.ensureSharedPVC(ctx); err != nil {
+		return fmt.Errorf("初始化共享存储失败: %w", err)
+	}
+
 	if err := s.createPVC(ctx, req.Name, req.Disk); err != nil {
 		return err
 	}
@@ -354,6 +359,9 @@ func (s *PodService) createDeployment(ctx context.Context, req model.CreatePodRe
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			// 数据盘为 RWO 的 PVC，滚动更新会出现“新 Pod 等旧 Pod 释放存储”的死锁，
+			// 因此统一使用 Recreate：先删旧 Pod，再创建新 Pod。
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{appLabel: req.Name}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
@@ -375,18 +383,33 @@ func (s *PodService) createDeployment(ctx context.Context, req model.CreatePodRe
 									corev1.ResourceMemory: memQ,
 								},
 							},
+							// 同一个 PVC 同时挂到 /data 与 /home/workspace：
+							// 编辑器文件树、Web 终端都基于 /home/workspace，保证看到同一份数据
 							VolumeMounts: []corev1.VolumeMount{
-								{Name: "data", MountPath: "/data"},
+								{Name: dataVolumeName, MountPath: "/data"},
+								{Name: dataVolumeName, MountPath: WorkspacePath},
+								// 全局共享目录：所有 Pod 挂载同一个 PVC，实现跨 Pod 共享
+								{Name: sharedVolumeName, MountPath: SharedPath},
 							},
+							WorkingDir:      WorkspacePath,
 							ImagePullPolicy: corev1.PullIfNotPresent,
 						},
 					},
 					Volumes: []corev1.Volume{
 						{
-							Name: "data",
+							Name: dataVolumeName,
 							VolumeSource: corev1.VolumeSource{
 								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 									ClaimName: pvcName(req.Name),
+								},
+							},
+						},
+						{
+							// 全局共享目录，与后端 /shared 指向同一份数据
+							Name: sharedVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: SharedPVCName,
 								},
 							},
 						},

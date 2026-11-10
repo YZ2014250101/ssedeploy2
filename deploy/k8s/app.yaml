@@ -29,6 +29,21 @@ spec:
   # 留空表示使用集群默认 StorageClass（K3s 默认为 local-path）
   # storageClassName: local-path
 ---
+# 全局共享目录卷：所有用户 Pod 与后端共用，挂载点为 /shared
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ssedeploy-shared
+  namespace: ssedeploy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # 注：ReadWriteOnce 适用于单节点 K3s（如 k3d）。
+  #     多节点集群需改用支持 ReadWriteMany 的 StorageClass（如 NFS）。
+---
 # 后端 API：Gin + client-go，提供 Pod 管理、终端与日志 WebSocket
 apiVersion: apps/v1
 kind: Deployment
@@ -80,6 +95,9 @@ spec:
             # metrics-server 采样间隔
             - name: SSD_METRICS_INTERVAL
               value: "15s"
+            # 全局共享目录路径（与用户 Pod 的 /shared 指向同一个卷）
+            - name: SSD_SHARED_DIR
+              value: "/shared"
             - name: TZ
               value: "Asia/Shanghai"
           # 就绪探针：健康检查通过后才接入流量
@@ -105,10 +123,16 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            # 全局共享目录
+            - name: shared
+              mountPath: /shared
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: ssedeploy-data
+        - name: shared
+          persistentVolumeClaim:
+            claimName: ssedeploy-shared
 ---
 # 后端 Service：名称必须为 backend，前端 Nginx upstream 依赖该 DNS 名
 apiVersion: v1

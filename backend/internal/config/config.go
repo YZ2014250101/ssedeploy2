@@ -16,6 +16,7 @@ type Config struct {
 	Kubeconfig      string        // kubeconfig 路径；为空时优先使用集群内配置
 	Namespace       string        // 业务命名空间，平台上所有 Pod 都创建在这里
 	StorageClass    string        // PVC 使用的 StorageClass；为空表示使用集群默认
+	SharedDir       string        // 全局共享目录的本地路径，所有用户/所有 Pod 共用
 	MetricsInterval time.Duration // metrics-server 采样间隔
 	DefaultAdmin    string        // 首次启动时创建的管理员账号
 	DefaultPassword string        // 首次启动时创建的管理员密码
@@ -52,6 +53,7 @@ func Load() *Config {
 		Kubeconfig:      getEnv("SSD_KUBECONFIG", ""),
 		Namespace:       getEnv("SSD_K8S_NAMESPACE", "ssedeploy"),
 		StorageClass:    getEnv("SSD_STORAGE_CLASS", ""),
+		SharedDir:       getEnv("SSD_SHARED_DIR", "/shared"),
 		MetricsInterval: getEnvDuration("SSD_METRICS_INTERVAL", 15*time.Second),
 		DefaultAdmin:    getEnv("SSD_ADMIN_USER", "admin"),
 		DefaultPassword: getEnv("SSD_ADMIN_PASSWORD", "admin123"),

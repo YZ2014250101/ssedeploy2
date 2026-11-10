@@ -23,10 +23,14 @@ services:
       # 生产环境务必替换为随机长字符串
       SSD_JWT_SECRET: "ssedeploy-dev-secret-please-change"
       SSD_METRICS_INTERVAL: "15s"
+      # 全局共享目录：所有用户 / 所有 Pod 共用同一份数据
+      SSD_SHARED_DIR: "/shared"
       TZ: "Asia/Shanghai"
     volumes:
       # SQLite 数据持久化
       - ssedeploy-data:/app/data
+      # 全局共享目录持久化
+      - ssedeploy-shared:/shared
       # kubeconfig 只读挂载（Windows 为 %USERPROFILE%\.kube\config）
       - ${KUBECONFIG_FILE:-~/.kube/config}:/kube/config:ro
     ports:
@@ -52,3 +56,4 @@ services:
 
 volumes:
   ssedeploy-data:
+  ssedeploy-shared:

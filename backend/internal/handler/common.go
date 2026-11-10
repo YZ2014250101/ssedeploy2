@@ -11,6 +11,7 @@ import (
 	"ssedeploy/internal/config"
 	"ssedeploy/internal/k8s"
 	"ssedeploy/internal/middleware"
+	"ssedeploy/internal/shared"
 	"ssedeploy/internal/store"
 )
 
@@ -22,13 +23,14 @@ type Handler struct {
 	GPUSvc      *k8s.GPUService
 	ClusterSvc  *k8s.ClusterService
 	StorageSvc  *k8s.StorageService
+	SharedSvc   *shared.Service
 	Store       *store.Store
 	Cfg         *config.Config
 }
 
 // New 创建接口处理器。
-func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, st *store.Store, cfg *config.Config) *Handler {
-	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, Store: st, Cfg: cfg}
+func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, sharedSvc *shared.Service, st *store.Store, cfg *config.Config) *Handler {
+	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, Store: st, Cfg: cfg}
 }
 
 // OK 统一成功响应：{code:0, message:"ok", data:...}
@@ -55,6 +57,28 @@ func respondErr(c *gin.Context, err error) {
 		Fail(c, http.StatusNotFound, "资源不存在")
 	case errors.Is(err, k8s.ErrPodForbidden):
 		Fail(c, http.StatusForbidden, "无权访问该 Pod")
+	case errors.Is(err, k8s.ErrOutsideWorkspace):
+		// 越界访问工作区：统一返回 403 + 明确提示，前端弹窗展示
+		Fail(c, http.StatusForbidden, k8s.ErrOutsideWorkspace.Error())
+	case errors.Is(err, k8s.ErrEntryExists):
+		Fail(c, http.StatusConflict, err.Error())
+	case errors.Is(err, k8s.ErrInvalidName):
+		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, k8s.ErrNotRegularFile):
+		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, k8s.ErrFileTooLarge):
+		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, k8s.ErrFileNotFound):
+		Fail(c, http.StatusNotFound, err.Error())
+	// 共享目录相关错误：越界统一 403，前端弹窗提示
+	case errors.Is(err, shared.ErrOutsideShared):
+		Fail(c, http.StatusForbidden, err.Error())
+	case errors.Is(err, shared.ErrRootLocked), errors.Is(err, shared.ErrInvalidName), errors.Is(err, shared.ErrNotRegularFile):
+		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, shared.ErrEntryExists):
+		Fail(c, http.StatusConflict, err.Error())
+	case errors.Is(err, shared.ErrNotFound):
+		Fail(c, http.StatusNotFound, err.Error())
 	case apierrors.IsAlreadyExists(err):
 		Fail(c, http.StatusConflict, "资源已存在")
 	default:
