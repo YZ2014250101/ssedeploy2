@@ -1,0 +1,52 @@
+# =============================================================================
+# 全局共享目录：/shared 跨 Pod 共享存储
+#
+# 原理：
+#   1. docker 卷 ssedeploy-shared 同时挂载到 k3s 容器的 /shared 与后端容器的 /shared；
+#   2. 这里用 hostPath 静态 PV 把 k3s 容器内的 /shared 暴露给集群；
+#   3. PVC ssedeploy-shared 被后端创建的所有用户 Pod 挂载到 /shared。
+#
+# 因此后端文件接口与所有用户 Pod 看到的是同一份数据。
+# 静态绑定（volumeName + storageClassName）可避免被 local-path 动态供给抢占。
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ssedeploy
+  labels:
+    app.kubernetes.io/managed-by: ssedeploy-bootstrap
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ssedeploy-shared-pv
+  labels:
+    app.kubernetes.io/managed-by: ssedeploy-bootstrap
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  # 独立 StorageClass，避免与 local-path 默认类冲突
+  storageClassName: ssedeploy-shared
+  hostPath:
+    # k3s 容器内 /shared 即 docker 卷 ssedeploy-shared 的挂载点
+    path: /shared
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ssedeploy-shared
+  namespace: ssedeploy
+  labels:
+    app.kubernetes.io/managed-by: ssedeploy-bootstrap
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssedeploy-shared
+  volumeName: ssedeploy-shared-pv
+  resources:
+    requests:
+      storage: 10Gi

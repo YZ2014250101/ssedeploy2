@@ -10,6 +10,9 @@ ENV CGO_ENABLED=0 \
 
 # 先拷贝依赖清单，利用镜像层缓存，代码变更时无需重新下载依赖
 COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+
 RUN go mod download
 
 # 再拷贝源码并编译
@@ -18,6 +21,12 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/ssedeploy ./cmd/server
 
 # ---------- 运行阶段：最小化镜像 ----------
 FROM alpine:3.20
+
+# 版本标识：由打包脚本通过 --build-arg APP_VERSION 注入，便于后续升级与排查
+ARG APP_VERSION=dev
+LABEL org.opencontainers.image.title="ssedeploy-backend" \
+      org.opencontainers.image.description="SSEDeploy 平台后端（Gin + client-go + SQLite）" \
+      org.opencontainers.image.version="${APP_VERSION}"
 
 # ca-certificates：访问 Kubernetes API（HTTPS）需要；tzdata：日志与图表的时间显示
 RUN apk add --no-cache ca-certificates tzdata

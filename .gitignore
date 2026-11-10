@@ -6,11 +6,14 @@ vendor/
 frontend/dist/
 build/
 out/
+dist/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+*.tar
+*.zip
 
 # 环境变量（保护密码）
 .env
@@ -30,3 +33,8 @@ yarn-error.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# 数据库
+*.db
+*.db-wal
+*.db-shm

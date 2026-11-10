@@ -6,8 +6,6 @@
 # 2. 若希望后端以后端 ServiceAccount 方式运行在集群内，请改用 deploy/k8s/ 下的清单。
 services:
   backend:
-    build:
-      context: ./backend
     image: ssedeploy/backend:latest
     container_name: ssedeploy-backend
     restart: unless-stopped
@@ -44,8 +42,6 @@ services:
       start_period: 10s
 
   frontend:
-    build:
-      context: ./frontend
     image: ssedeploy/frontend:latest
     container_name: ssedeploy-frontend
     restart: unless-stopped

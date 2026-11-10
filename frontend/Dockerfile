@@ -14,6 +14,12 @@ RUN npm run build
 # ---------- 运行阶段：Nginx 托管静态文件并反向代理后端 ----------
 FROM nginx:1.27-alpine
 
+# 版本标识：由打包脚本通过 --build-arg APP_VERSION 注入
+ARG APP_VERSION=dev
+LABEL org.opencontainers.image.title="ssedeploy-frontend" \
+      org.opencontainers.image.description="SSEDeploy 平台前端（React 静态资源 + Nginx 反代）" \
+      org.opencontainers.image.version="${APP_VERSION}"
+
 # 自定义 Nginx 配置：SPA history 路由 + /api 反向代理（含 WebSocket 升级）
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
