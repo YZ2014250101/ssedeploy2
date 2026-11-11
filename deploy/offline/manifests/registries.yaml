@@ -1,0 +1,22 @@
+# =============================================================================
+# Docker Hub 镜像加速配置（K3s 内置 containerd 启动时读取）
+#
+# 背景：内嵌 K3s 的 containerd 直连 docker.io 在中国大陆网络下经常超时，
+#       导致创建 Pod 时拉取 ubuntu:22.04 等镜像卡住。
+# 解决：为 docker.io 配置镜像代理，containerd 会按顺序尝试下列地址，
+#       全部失败后才回退到官方 registry。
+#
+# 修改后需要重启 K3s 容器生效：
+#   docker restart ssedeploy-k3s
+#
+# 如果某个镜像站不可用，可调整 endpoint 顺序或替换为其他可信镜像站。
+# =============================================================================
+mirrors:
+  docker.io:
+    endpoint:
+      # DaoCloud 公共镜像（国内）
+      - "https://docker.m.daocloud.io"
+      # 1ms 公共镜像（国内）
+      - "https://docker.1ms.run"
+      # 官方 registry 兜底（境外网络或镜像站故障时仍可直连）
+      - "https://registry-1.docker.io"

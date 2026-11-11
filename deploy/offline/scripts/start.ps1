@@ -20,7 +20,11 @@ param(
   [int]$WaitSeconds = 180
 )
 
-$ErrorActionPreference = "Stop"
+# 注意：这里不能设为 Stop。脚本中大量「预期可能失败」的 docker 命令
+# （镜像不存在、容器未启动、ctr 尚未就绪等）会把错误写到 stderr，
+# PowerShell 5.1 会将其视为终止性错误，导致启动流程被提前中断。
+# 关键步骤统一通过 $LASTEXITCODE 判断，失败时显式 exit / 提示。
+$ErrorActionPreference = "Continue"
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
 
@@ -70,7 +74,8 @@ $CoreImages = @(
   "rancher/mirrored-coredns-coredns:1.14.3",    # 集群 DNS
   "rancher/mirrored-metrics-server:v0.8.1",     # 资源指标（监控页数据来源）
   "rancher/local-path-provisioner:v0.0.36",     # 默认存储供给，用户 Pod 的 PVC 依赖它
-  "rancher/mirrored-library-busybox:1.37.0"     # 系统辅助镜像
+  "rancher/mirrored-library-busybox:1.37.0",    # 系统辅助镜像
+  "ubuntu:22.04"                                # 平台默认 Pod 镜像，预加载后创建 Pod 不再依赖外网
 )
 $ImagesDir = Join-Path $Root "images"
 $CoreImagesTar = Join-Path $ImagesDir "k3s-core-images.tar"
@@ -209,9 +214,9 @@ if (-not (Test-Path $CoreImagesTar)) {
     if ($LASTEXITCODE -eq 0 -and $existing.Count -gt 0) {
       $needImport = $false
       foreach ($img in $CoreImages) {
-        # ctr 输出形如 docker.io/rancher/mirrored-pause:3.6，去掉 rancher/ 前缀后匹配
-        $shortName = ($img -split "/", 2)[1]
-        if (-not ($existing -match [regex]::Escape($shortName))) {
+        # ctr 输出形如 docker.io/rancher/mirrored-pause:3.6、docker.io/library/ubuntu:22.04，
+        # 直接用原始镜像名做子串匹配，兼容带/不带 registry 前缀两种情况
+        if (-not ($existing -match [regex]::Escape($img))) {
           $needImport = $true
           break
         }

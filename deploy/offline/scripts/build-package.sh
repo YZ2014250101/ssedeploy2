@@ -52,6 +52,8 @@ cp "$OFFLINE_DIR/docker-compose.gpu.yml" "$PKG_DIR/"
 cp "$OFFLINE_DIR/README.md" "$PKG_DIR/"
 cp "$OFFLINE_DIR/.env.example" "$PKG_DIR/"
 cp "$OFFLINE_DIR/manifests/shared-pv.yaml" "$PKG_DIR/manifests/"
+# Docker Hub 镜像加速配置（国内网络创建 Pod 拉取镜像用）
+cp "$OFFLINE_DIR/manifests/registries.yaml" "$PKG_DIR/manifests/"
 echo "$VERSION" > "$PKG_DIR/VERSION"
 
 for f in backend-entrypoint.sh start.ps1 start.sh stop.ps1 stop.sh load-images.ps1 load-images.sh clean.ps1 clean.sh; do

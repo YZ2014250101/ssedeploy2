@@ -20,7 +20,8 @@ ssedeploy-<版本>/
 ├── docker-compose.yml           # 服务编排（k3s + backend + frontend + bootstrap）
 ├── docker-compose.gpu.yml       # GPU 直通扩展（启动脚本检测到 NVIDIA GPU 时自动叠加）
 ├── manifests/
-│   └── shared-pv.yaml           # 全局共享目录 /shared 的静态 PV/PVC
+│   ├── shared-pv.yaml           # 全局共享目录 /shared 的静态 PV/PVC
+│   └── registries.yaml          # Docker Hub 镜像加速（国内网络拉取镜像用）
 ├── scripts/
 │   ├── backend-entrypoint.sh    # 后端入口：等待并改写 kubeconfig
 │   ├── start.ps1 / start.sh     # 一键启动
@@ -133,6 +134,31 @@ TZ=Asia/Shanghai
 
 若端口被占用，启动脚本会直接报错并提示修改对应端口。
 
+### 5.1 创建 Pod 拉取镜像超时（中国大陆网络）
+
+平台创建 Pod 时由内嵌 K3s 的 containerd 拉取镜像，默认直连 Docker Hub，国内网络容易超时。已内置两层处理：
+
+1. **镜像加速**：`manifests/registries.yaml` 为 `docker.io` 配置了国内镜像站，K3s 启动时自动读取，按顺序尝试镜像站后回退官方 registry；
+2. **默认镜像预加载**：启动脚本会把 `ubuntu:22.04`（平台默认 Pod 镜像）导入 K3s 本地镜像库，创建默认 Pod 时直接使用本地镜像，不再访问外网。
+
+如需调整镜像站，编辑 `manifests/registries.yaml` 后重启 K3s：
+
+```bash
+docker restart ssedeploy-k3s
+```
+
+如需预加载其他常用镜像，可先在宿主机拉取，再导入 K3s：
+
+```bash
+docker pull node:20
+docker save -o node20.tar node:20
+docker cp node20.tar ssedeploy-k3s:/tmp/node20.tar
+docker exec ssedeploy-k3s ctr -n k8s.io images import /tmp/node20.tar
+docker exec ssedeploy-k3s rm -f /tmp/node20.tar
+```
+
+> 镜像加速只影响内嵌 K3s，不影响宿主机 Docker 自身的配置。
+
 ---
 
 ## 6. 数据持久化与备份
@@ -183,6 +209,7 @@ docker run --rm -v ssedeploy-data:/data -v "$PWD":/backup alpine \
 | --- | --- |
 | 启动脚本提示 Docker 未就绪 | 启动 Docker Desktop / `sudo systemctl start docker` |
 | 提示端口被占用 | 修改 `.env` 中 `FRONTEND_PORT` / `BACKEND_PORT` / `K3S_API_PORT` 后重试 |
+| 创建 Pod 拉取镜像超时 | 检查 `manifests/registries.yaml` 是否存在并已挂载（`docker exec ssedeploy-k3s cat /etc/rancher/k3s/registries.yaml`）；修改后执行 `docker restart ssedeploy-k3s`；默认 `ubuntu:22.04` 已预加载，无需外网 |
 | 首次启动超过 2 分钟仍未就绪 | `docker compose logs -f k3s` 查看 K3s 是否在初始化镜像/网络 |
 | 前端可打开但登录报错 | `docker compose logs backend` 查看数据库与 K3s 连接日志 |
 | 监控/GPU 数据为空 | 监控需 metrics-server（K3s 自带）；GPU 页为空先确认宿主机有 NVIDIA 显卡，再执行 `docker run --rm --gpus all --entrypoint nvidia-smi ssedeploy/backend:<版本> -L`；无 GPU 时显示 0 属正常 |

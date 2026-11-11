@@ -72,6 +72,8 @@ Copy-Item (Join-Path $OfflineDir "docker-compose.gpu.yml") $PkgDir
 Copy-Item (Join-Path $OfflineDir "README.md") $PkgDir
 Copy-Item (Join-Path $OfflineDir ".env.example") $PkgDir
 Copy-Item (Join-Path $OfflineDir "manifests\shared-pv.yaml") (Join-Path $PkgDir "manifests")
+# Docker Hub 镜像加速配置（国内网络创建 Pod 拉取镜像用）
+Copy-Item (Join-Path $OfflineDir "manifests\registries.yaml") (Join-Path $PkgDir "manifests")
 Set-Content -Path (Join-Path $PkgDir "VERSION") -Value $Version -Encoding ASCII
 
 # 运行时脚本（不包含打包脚本本身）

@@ -85,7 +85,103 @@ fi
 step "启动服务（K3s 首次启动需要 1~2 分钟）"
 docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans || fail "启动失败，请执行 docker compose logs 查看原因。"
 
-# 7. 等待前端可访问
+# 7. 向 K3s 注入核心镜像（容器内 containerd 与宿主机 Docker 互相独立）
+#
+# ubuntu:22.04 是平台默认 Pod 镜像：预加载后创建 Pod 直接命中本地镜像，
+# 不再访问 docker.io，避免中国大陆网络下拉取超时。
+CORE_IMAGES=(
+  "rancher/mirrored-pause:3.6"
+  "rancher/mirrored-coredns-coredns:1.14.3"
+  "rancher/mirrored-metrics-server:v0.8.1"
+  "rancher/local-path-provisioner:v0.0.36"
+  "rancher/mirrored-library-busybox:1.37.0"
+  "ubuntu:22.04"
+)
+CORE_TAR="$ROOT/images/k3s-core-images.tar"
+
+inject_core_images() {
+  local i state="" existing img
+  # 容器刚创建时 exec 会失败，先等待进入运行状态
+  for i in $(seq 1 60); do
+    state="$(docker inspect -f '{{.State.Running}}' ssedeploy-k3s 2>/dev/null || true)"
+    [ "$state" = "true" ] && break
+    sleep 2
+  done
+  if [ "$state" != "true" ]; then
+    echo "    K3s 容器未运行，跳过镜像注入"
+    return 0
+  fi
+
+  # 容器内已具备全部核心镜像时直接跳过，避免每次启动重复导入 + 重启
+  local need=0
+  existing="$(docker exec ssedeploy-k3s ctr -n k8s.io images ls -q 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    for img in "${CORE_IMAGES[@]}"; do
+      printf '%s\n' "$existing" | grep -qF "$img" || { need=1; break; }
+    done
+  else
+    need=1
+  fi
+  if [ "$need" -eq 0 ]; then
+    echo "    K3s 内已存在全部核心镜像，跳过导入"
+    return 0
+  fi
+
+  # 宿主机缺少的镜像尝试拉取（离线环境拉取失败时忽略，只导入已有的）
+  local ok=()
+  for img in "${CORE_IMAGES[@]}"; do
+    if docker image inspect "$img" >/dev/null 2>&1 || docker pull "$img" >/dev/null 2>&1; then
+      ok+=("$img")
+    else
+      echo "    宿主机缺少 $img 且拉取失败，跳过该镜像"
+    fi
+  done
+  if [ "${#ok[@]}" -eq 0 ]; then
+    echo "    无可用的核心镜像，跳过注入"
+    return 0
+  fi
+
+  if [ ! -f "$CORE_TAR" ]; then
+    if ! docker save -o "$CORE_TAR" "${ok[@]}" >/dev/null 2>&1; then
+      echo "    核心镜像导出失败，跳过注入"
+      return 0
+    fi
+  fi
+
+  local copied=0 imported=0
+  for i in $(seq 1 30); do
+    if docker cp "$CORE_TAR" ssedeploy-k3s:/tmp/k3s-core-images.tar >/dev/null 2>&1; then
+      copied=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$copied" -ne 1 ]; then
+    echo "    复制镜像包到 K3s 容器失败，跳过注入"
+    return 0
+  fi
+
+  for i in $(seq 1 30); do
+    if docker exec ssedeploy-k3s ctr -n k8s.io images import /tmp/k3s-core-images.tar >/dev/null 2>&1; then
+      imported=1
+      break
+    fi
+    sleep 3
+  done
+  docker exec ssedeploy-k3s rm -f /tmp/k3s-core-images.tar >/dev/null 2>&1 || true
+
+  if [ "$imported" -eq 1 ]; then
+    step "重启 K3s 使核心镜像生效"
+    docker restart ssedeploy-k3s >/dev/null
+  else
+    echo "    核心镜像导入失败，请查看 docker logs ssedeploy-k3s"
+  fi
+}
+
+step "向 K3s 注入核心镜像"
+inject_core_images
+
+# 8. 等待前端可访问
 step "等待前端就绪 http://127.0.0.1:${FRONTEND_PORT}"
 URL="http://127.0.0.1:${FRONTEND_PORT}/"
 OK=0

@@ -50,6 +50,8 @@ services:
       - k3s-data:/var/lib/rancher/k3s
       # kubeconfig 落在该卷，供 backend / bootstrap 只读挂载
       - k3s-config:/etc/rancher/k3s
+      # Docker Hub 镜像加速：K3s 启动时读取，避免国内直连 docker.io 超时
+      - ./manifests/registries.yaml:/etc/rancher/k3s/registries.yaml:ro
       # 全局共享目录：与 backend 的 /shared 是同一个 Docker 卷
       - ssedeploy-shared:/shared
     ports:
