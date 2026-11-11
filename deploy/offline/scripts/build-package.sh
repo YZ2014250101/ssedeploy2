@@ -47,6 +47,8 @@ rm -rf "$PKG_DIR"
 mkdir -p "$IMAGES_DIR" "$PKG_DIR/manifests" "$PKG_DIR/scripts"
 
 cp "$OFFLINE_DIR/docker-compose.yml" "$PKG_DIR/"
+# GPU 直通扩展：启动脚本检测到可直通的 NVIDIA GPU 时自动叠加
+cp "$OFFLINE_DIR/docker-compose.gpu.yml" "$PKG_DIR/"
 cp "$OFFLINE_DIR/README.md" "$PKG_DIR/"
 cp "$OFFLINE_DIR/.env.example" "$PKG_DIR/"
 cp "$OFFLINE_DIR/manifests/shared-pv.yaml" "$PKG_DIR/manifests/"

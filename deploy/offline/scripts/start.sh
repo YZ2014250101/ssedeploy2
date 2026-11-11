@@ -2,7 +2,7 @@
 # =============================================================================
 # 一键启动脚本（Linux / macOS）
 #
-# 流程：检查 Docker → 生成 .env → 检查端口 → 导入离线镜像 → compose 启动 → 等待前端就绪
+# 流程：检查 Docker → 生成 .env → 检查端口 → 导入离线镜像 → 检测 GPU → compose 启动 → 等待前端就绪
 #
 # 用法：
 #   bash scripts/start.sh
@@ -69,11 +69,23 @@ if ! docker image inspect "ssedeploy/backend:${VERSION}" >/dev/null 2>&1; then
   docker load -i "$TAR"
 fi
 
-# 5. 启动
-step "启动服务（K3s 首次启动需要 1~2 分钟）"
-docker compose up -d --remove-orphans || fail "启动失败，请执行 docker compose logs 查看原因。"
+# 5. 检测 GPU 直通能力（以容器内能否真正执行 nvidia-smi 为准）
+COMPOSE_ARGS=(-f docker-compose.yml)
+step "检测 NVIDIA GPU"
+if [ ! -f docker-compose.gpu.yml ]; then
+  echo "    未找到 docker-compose.gpu.yml，按无 GPU 模式启动"
+elif docker run --rm --gpus all --entrypoint nvidia-smi "ssedeploy/backend:${VERSION}" -L >/dev/null 2>&1; then
+  COMPOSE_ARGS+=(-f docker-compose.gpu.yml)
+  echo "    已检测到 NVIDIA GPU，启用 GPU 直通"
+else
+  printf '\033[33m    未检测到可直通的 NVIDIA GPU，按无 GPU 模式启动\033[0m\n'
+fi
 
-# 6. 等待前端可访问
+# 6. 启动
+step "启动服务（K3s 首次启动需要 1~2 分钟）"
+docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans || fail "启动失败，请执行 docker compose logs 查看原因。"
+
+# 7. 等待前端可访问
 step "等待前端就绪 http://127.0.0.1:${FRONTEND_PORT}"
 URL="http://127.0.0.1:${FRONTEND_PORT}/"
 OK=0

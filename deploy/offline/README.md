@@ -18,6 +18,7 @@ ssedeploy-<版本>/
 ├── .env                         # 运行配置（端口、密码、版本）
 ├── .env.example                 # 配置模板
 ├── docker-compose.yml           # 服务编排（k3s + backend + frontend + bootstrap）
+├── docker-compose.gpu.yml       # GPU 直通扩展（启动脚本检测到 NVIDIA GPU 时自动叠加）
 ├── manifests/
 │   └── shared-pv.yaml           # 全局共享目录 /shared 的静态 PV/PVC
 ├── scripts/
@@ -43,8 +44,26 @@ ssedeploy-<版本>/
 | 磁盘 | 建议 ≥ 20 GB 可用空间（镜像约 1.5~2 GB） |
 | CPU 虚拟化 | Windows/macOS 需开启虚拟化以运行 Linux 容器 |
 | 网络 | **离线可用**；有网环境首次启动会自动拉取缺失镜像 |
+| GPU（可选） | NVIDIA 显卡 + 驱动；Docker Desktop 需启用 WSL2 后端与 GPU 支持。启动脚本会自动检测，检测失败则按无 GPU 模式启动 |
 
 > 说明：内嵌 K3s 以特权容器方式运行（`privileged: true`），这是 K3s-in-Docker 的必要条件。
+
+### 2.1 GPU 识别说明
+
+平台概览与 GPU 监控页通过后端容器内的 `nvidia-smi` 采集宿主机显卡，因此需要把 GPU 直通给 `backend`：
+
+- 启动脚本（`start.ps1` / `start.sh`）会执行一次 `docker run --gpus all ... nvidia-smi -L` 探测；
+- 探测成功：自动叠加 `docker-compose.gpu.yml`，平台显示真实 GPU 数量、利用率与显存；
+- 探测失败：不叠加该文件，平台按无 GPU 模式运行（GPU 数量为 0），不影响其他功能；
+- 后端镜像基于 debian-slim，能够执行 NVIDIA 运行时可注入的 `nvidia-smi`（alpine 的 musl 无法执行）。
+
+手动验证 GPU 直通是否可用：
+
+```bash
+docker run --rm --gpus all --entrypoint nvidia-smi ssedeploy/backend:<版本> -L
+```
+
+能打印显卡列表即表示可用；若提示 `could not select device driver`，请更新 NVIDIA 驱动并确认 Docker Desktop 已开启 GPU 支持。
 
 ---
 
@@ -166,6 +185,6 @@ docker run --rm -v ssedeploy-data:/data -v "$PWD":/backup alpine \
 | 提示端口被占用 | 修改 `.env` 中 `FRONTEND_PORT` / `BACKEND_PORT` / `K3S_API_PORT` 后重试 |
 | 首次启动超过 2 分钟仍未就绪 | `docker compose logs -f k3s` 查看 K3s 是否在初始化镜像/网络 |
 | 前端可打开但登录报错 | `docker compose logs backend` 查看数据库与 K3s 连接日志 |
-| 监控/GPU 数据为空 | 需安装 metrics-server（K3s 自带）与 NVIDIA 驱动；无 GPU 时 GPU 页为空属正常 |
+| 监控/GPU 数据为空 | 监控需 metrics-server（K3s 自带）；GPU 页为空先确认宿主机有 NVIDIA 显卡，再执行 `docker run --rm --gpus all --entrypoint nvidia-smi ssedeploy/backend:<版本> -L`；无 GPU 时显示 0 属正常 |
 | 内存不足导致 Pod 启动失败 | Docker Desktop 分配内存调至 ≥ 8 GB |
 | 换机器后数据不见了 | 数据在 Docker 卷中，需按第 6 节迁移卷，而不是只拷离线包 |

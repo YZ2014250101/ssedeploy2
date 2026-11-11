@@ -25,6 +25,9 @@ services:
   k3s:
     image: ${K3S_IMAGE:-rancher/k3s:v1.35.5-k3s1}
     container_name: ssedeploy-k3s
+    # 固定 hostname：K3s 默认用主机名作为节点名，容器重启后 hostname 会变成新的
+    # Container ID，导致集群里不断新增 NotReady 僵尸节点，这里强制固定节点名。
+    hostname: k3s-node
     restart: unless-stopped
     privileged: true
     # healthcheck 中的 kubectl 使用容器内默认 kubeconfig

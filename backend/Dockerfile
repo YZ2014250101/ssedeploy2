@@ -20,7 +20,10 @@ COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /out/ssedeploy ./cmd/server
 
 # ---------- 运行阶段：最小化镜像 ----------
-FROM alpine:3.20
+# 使用 glibc 基础镜像（debian-slim）：NVIDIA 容器运行时会挂载宿主机的
+# nvidia-smi 二进制与驱动库，alpine 的 musl 无法执行该二进制，会导致
+# 平台 GPU 识别数量为 0。debian 下再配合 GPU 直通扩展即可正常采集。
+FROM debian:bookworm-slim
 
 # 版本标识：由打包脚本通过 --build-arg APP_VERSION 注入，便于后续升级与排查
 ARG APP_VERSION=dev
@@ -28,8 +31,12 @@ LABEL org.opencontainers.image.title="ssedeploy-backend" \
       org.opencontainers.image.description="SSEDeploy 平台后端（Gin + client-go + SQLite）" \
       org.opencontainers.image.version="${APP_VERSION}"
 
-# ca-certificates：访问 Kubernetes API（HTTPS）需要；tzdata：日志与图表的时间显示
-RUN apk add --no-cache ca-certificates tzdata
+# ca-certificates：访问 Kubernetes API（HTTPS）需要
+# tzdata：日志与图表的时间显示
+# wget：compose healthcheck 使用
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata wget \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

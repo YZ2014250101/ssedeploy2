@@ -67,6 +67,8 @@ New-Item -ItemType Directory -Path (Join-Path $PkgDir "manifests") -Force | Out-
 New-Item -ItemType Directory -Path (Join-Path $PkgDir "scripts") -Force | Out-Null
 
 Copy-Item (Join-Path $OfflineDir "docker-compose.yml") $PkgDir
+# GPU 直通扩展：启动脚本检测到可直通的 NVIDIA GPU 时自动叠加
+Copy-Item (Join-Path $OfflineDir "docker-compose.gpu.yml") $PkgDir
 Copy-Item (Join-Path $OfflineDir "README.md") $PkgDir
 Copy-Item (Join-Path $OfflineDir ".env.example") $PkgDir
 Copy-Item (Join-Path $OfflineDir "manifests\shared-pv.yaml") (Join-Path $PkgDir "manifests")

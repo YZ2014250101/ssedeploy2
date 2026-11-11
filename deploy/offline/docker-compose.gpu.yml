@@ -1,0 +1,28 @@
+# =============================================================================
+# GPU 直通扩展（可选）
+#
+# 作用：让 backend 容器可以看到宿主机的 NVIDIA GPU，从而执行 nvidia-smi，
+#       平台概览 / GPU 监控页才能显示真实显卡数量、利用率与显存。
+#
+# 启用条件（启动脚本会自动检测，全部满足才会叠加本文件）：
+#   1. 宿主机安装 NVIDIA 驱动，且 Docker 支持 nvidia runtime
+#      （Docker Desktop 需开启 WSL2 后端与 GPU 支持）；
+#   2. 容器内能成功执行 nvidia-smi（后端镜像已改为 debian-slim，满足 glibc 依赖）。
+#
+# 手动启用：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# 没有 GPU 的机器不要启用本文件，否则容器会因找不到 nvidia 设备而启动失败。
+# =============================================================================
+services:
+  backend:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
