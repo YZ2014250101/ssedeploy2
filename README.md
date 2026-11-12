@@ -2,7 +2,8 @@
 
 对标 YatTerra 的轻量部署控制台。第一阶段只实现 **Pod 模块**，侧边栏其余菜单均为 UI 占位（点击提示「该模块开发中」）。
 
-- 后端：Go + Gin + client-go，RESTful 接口，SQLite 持久化
+- 后端：Go + Gin + client-go，RESTful 接口，SQLite 持久化（账号模块使用 GORM）
+- 账号认证：支持注册 / 登录，bcrypt 密码加密，JWT 鉴权
 - 前端：React 18 + TypeScript + Vite + TailwindCSS + shadcn/ui 风格组件
 - 集群交互：Deployment + PVC 管理业务 "Pod"，对用户屏蔽 Deployment 概念
 
@@ -14,8 +15,9 @@ ssedeploy2/
 │   ├── cmd/server/main.go       # 入口：初始化 DB / K8s / 路由 / 指标采样
 │   ├── internal/
 │   │   ├── config/              # 环境变量配置
-│   │   ├── model/               # User / Pod / Metric / Event 数据模型
+│   │   ├── model/               # User（GORM）/ Pod / Metric / Event 数据模型
 │   │   ├── store/               # SQLite 访问层（users / pod_metas / metric_samples）
+│   │   ├── service/             # 账号认证业务逻辑（注册校验、bcrypt 加密、事务入库）
 │   │   ├── auth/                # JWT 签发与解析
 │   │   ├── middleware/          # 鉴权中间件（Bearer 或 ?token=）
 │   │   ├── k8s/                 # client-go 封装：Pod 生命周期、日志、exec、指标、事件
@@ -93,9 +95,15 @@ go run ./cmd/server
 
 ```bash
 curl http://127.0.0.1:8080/healthz
-curl -X POST http://127.0.0.1:8080/api/v1/auth/login \
+# 登录（旧路径 /api/v1/auth/login 仍然兼容）
+curl -X POST http://127.0.0.1:8080/api/v1/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin123"}'
+
+# 注册新账号
+curl -X POST http://127.0.0.1:8080/api/v1/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo_user","email":"demo@example.com","password":"demo1234"}'
 ```
 
 ### 3.2 启动前端
@@ -171,7 +179,8 @@ kubectl apply -f deploy/k8s/rbac.yaml
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/auth/login` | 登录，返回 token 与用户信息 |
+| POST | `/login` | 登录，返回 JWT token 与用户信息（旧路径 `/auth/login` 兼容保留） |
+| POST | `/register` | 用户注册 |
 | GET | `/auth/me` | 当前登录用户 |
 | GET | `/overview` | 概览页聚合数据（别名 `/api/overview`） |
 | GET | `/host/:nodeName` | 主机健康详情（`self` 表示后端所在节点，别名 `/api/host/:nodeName`） |
@@ -223,8 +232,135 @@ kubectl apply -f deploy/k8s/rbac.yaml
 
 > **多节点限制**：`/proc` 与 `nvidia-smi` 只能采集到后端所在节点的数据。请求非采集器所在节点时，接口仍返回该节点的 Kubernetes Node 信息（系统信息、节点列表、Pod 数），但实时指标与折线图为空，页面会提示「当前节点不是后端所在节点」。
 
+### 6.3 账号认证接口
 
-## 7. 业务规则说明
+所有认证接口统一前缀 `/api/v1`，响应统一为 `{ code, message, data }`，`code=0` 表示成功。
+
+#### POST /api/v1/register 用户注册
+
+请求体：
+
+```json
+{
+  "username": "string",
+  "email": "string",
+  "password": "string"
+}
+```
+
+校验规则：
+
+- username：4-20 位，仅字母、数字、下划线，全局唯一
+- email：合法邮箱格式，全局唯一
+- password：6-24 位
+- confirmPassword 仅前端校验，不提交给后端
+
+成功（HTTP 200）：
+
+```json
+{
+  "code": 0,
+  "message": "注册成功",
+  "data": {
+    "id": 2,
+    "username": "demo_user",
+    "email": "demo@example.com"
+  }
+}
+```
+
+失败（HTTP 400）：
+
+```json
+{
+  "code": 400,
+  "message": "用户名已被占用",
+  "data": null
+}
+```
+
+其他失败提示：「该邮箱已注册」「用户名需为 4-20 位字母、数字或下划线」「请输入合法的邮箱地址」「密码长度需为 6-24 位」。
+
+#### POST /api/v1/login 用户登录
+
+请求体：
+
+```json
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+成功返回 JWT token 与用户信息（密码字段永不返回）：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "user": {
+      "id": 1,
+      "username": "admin",
+      "displayName": "管理员",
+      "role": "admin",
+      "createdAt": 1730000000
+    }
+  }
+}
+```
+
+失败（HTTP 401）：
+
+```json
+{
+  "code": 401,
+  "message": "账号或密码错误",
+  "data": null
+}
+```
+
+登录成功后，后续接口需在请求头携带 `Authorization: Bearer {token}`；WebSocket 使用 `?token={token}`。
+
+## 7. 功能模块说明
+
+### 7.1 账号认证模块
+
+- 支持注册、登录，登录成功后签发 JWT，后续接口通过 `Authorization: Bearer {token}` 鉴权。
+- 后端实现位置：`internal/model/user.go`（GORM 模型）、`internal/service/auth.go`（注册业务逻辑）、`internal/handler/auth.go`（登录 / 注册 handler）、`internal/router/router.go`（`/api/v1` 路由组）、`internal/auth/jwt.go`（复用现有 JWT 工具）。
+- 注册流程：参数校验 → 用户名 / 邮箱唯一性校验 → bcrypt 加密密码 → GORM 事务入库。
+- 登录逻辑与原有实现保持一致：按 username 查用户、bcrypt 比对密码、签发 JWT。
+
+### 7.2 数据库说明
+
+- `users` 表由 GORM `AutoMigrate` 在服务启动时自动创建 / 补全，无需手动执行 SQL。
+- 字段：`id`、`username`、`email`、`password_hash`、`display_name`、`role`、`created_at`、`updated_at`。
+- `username`、`email` 均建立唯一索引，数据库层面兜底并发重复注册。
+- 密码使用 bcrypt 加密后存入 `password_hash`，不保存明文；历史数据库启动时会自动补充 `email`、`updated_at` 字段（可空，兼容存量管理员账号）。
+
+### 7.3 部署说明
+
+- 不需要额外手动建表，程序启动时 GORM 自动迁移生成 / 更新 `users` 表。
+- 沿用现有 SQLite 持久化方案（`SSD_DB_PATH`），不新增数据库服务，`docker compose` 与离线包启动方式不变。
+- 已有环境升级时直接替换后端镜像并重启即可，历史数据与默认管理员账号保持不变。
+
+### 7.4 前端说明
+
+- 登录页面内置「登录 / 注册账号」Tab 切换，登录 Tab 默认激活，无需单独访问注册页面。
+- 注册表单包含用户名、邮箱、密码、确认密码，全部为行内实时校验（防抖 300ms），确认密码不一致时红色提示。
+- 密码框带眼睛图标，可在明文 / 密文之间切换，登录与注册表单均支持。
+- 注册按钮提交后进入 loading 置灰状态，防止重复提交。
+- 注册成功后 toast 提示并自动切回登录 Tab，用户名回填到登录框；注册失败展示后端返回的 `message`。
+
+### 7.5 注意事项
+
+- 密码只保存 bcrypt 密文，任何接口都不返回密码字段。
+- 所有认证接口统一前缀 `/api/v1`：登录 `POST /api/v1/login`，注册 `POST /api/v1/register`。
+- 登录成功后，后续接口请求 Header 需携带 `Authorization: Bearer {token}`。
+- 注册接口的 `confirmPassword` 只做前端校验，不传给后端。
+
+## 8. 业务规则说明
 
 - **Deployment 承载**：页面上的一切 "Pod" 实际是一个 Deployment（1 副本）+ 一个 PVC（数据盘，挂载 `/data`），名称对用户唯一。
 - **启动 / 停止**：启动 = 副本数调到 1，停止 = 副本数调到 0，与截图事件 `Scaled down replica set` 对应。
@@ -232,7 +368,7 @@ kubectl apply -f deploy/k8s/rbac.yaml
 - **责任人**：创建者为负责人，角色固定为 `负责人`。
 - **列表范围**：仅展示带 `ssedeploy.io/managed=true` 标签的资源，避免误显示集群内其他工作负载。
 
-## 8. 常见问题
+## 9. 常见问题
 
 | 现象 | 排查方向 |
 | --- | --- |

@@ -11,6 +11,7 @@ import (
 	"ssedeploy/internal/config"
 	"ssedeploy/internal/k8s"
 	"ssedeploy/internal/middleware"
+	"ssedeploy/internal/service"
 	"ssedeploy/internal/shared"
 	"ssedeploy/internal/store"
 )
@@ -24,13 +25,14 @@ type Handler struct {
 	ClusterSvc  *k8s.ClusterService
 	StorageSvc  *k8s.StorageService
 	SharedSvc   *shared.Service
+	AuthSvc     *service.AuthService
 	Store       *store.Store
 	Cfg         *config.Config
 }
 
 // New 创建接口处理器。
 func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, sharedSvc *shared.Service, st *store.Store, cfg *config.Config) *Handler {
-	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, Store: st, Cfg: cfg}
+	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, AuthSvc: service.NewAuthService(st), Store: st, Cfg: cfg}
 }
 
 // OK 统一成功响应：{code:0, message:"ok", data:...}

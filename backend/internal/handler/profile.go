@@ -17,6 +17,14 @@ func permissionCountByRole(role string) int {
 	return 6
 }
 
+// userEmail 优先返回用户真实邮箱，历史账号没有邮箱时生成平台内占位邮箱。
+func userEmail(user *model.User) string {
+	if user.Email != "" {
+		return user.Email
+	}
+	return user.Username + "@ssedeploy.local"
+}
+
 // UserProfile 返回个人管理页所需的账户信息。
 func (h *Handler) UserProfile(c *gin.Context) {
 	user, err := h.Store.GetUserByID(currentUserID(c))
@@ -31,8 +39,8 @@ func (h *Handler) UserProfile(c *gin.Context) {
 		Role:            user.Role,
 		PermissionCount: permissionCountByRole(user.Role),
 		DisplayName:     user.Display(),
-		// 当前用户表没有邮箱字段，按账号名生成平台内邮箱展示
-		Email: user.Username + "@ssedeploy.local",
+		// 注册用户展示真实邮箱；历史内置管理员没有邮箱时退回平台内占位邮箱
+		Email: userEmail(user),
 		// 主题偏好只存在浏览器 localStorage，后端固定返回默认值
 		Theme: "light",
 	})
