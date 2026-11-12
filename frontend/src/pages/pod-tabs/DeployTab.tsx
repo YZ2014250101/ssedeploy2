@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   Activity,
+  Copy,
   Cpu,
   GitBranch,
   Loader2,
@@ -10,6 +11,7 @@ import {
   RefreshCw,
   Square,
   Trash2,
+  Webhook,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -80,7 +82,8 @@ const EMPTY_FORM: FormState = {
 }
 
 // 部署 Tab：部署实例列表 + 创建/编辑弹窗 + 文档说明
-export function DeployTab() {
+// 部署动作全部在当前 Pod 内完成：拉取代码到 /home/workspace/deployments/<name> 并执行 deploy.sh
+export function DeployTab({ podName }: { podName: string }) {
   const [items, setItems] = useState<DeployView[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState("")
@@ -94,19 +97,23 @@ export function DeployTab() {
   const [deleting, setDeleting] = useState(false)
 
   const [doc, setDoc] = useState<"tutorial" | "webhook" | null>(null)
+  const [webhookTarget, setWebhookTarget] = useState<DeployView | null>(null)
   const [gpus, setGpus] = useState<GPUDeviceData[]>([])
 
-  const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true)
-    try {
-      const result = await deployApi.list()
-      setItems(result.items)
-    } catch (error) {
-      if (!silent) toast.error((error as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true)
+      try {
+        const result = await deployApi.list(podName)
+        setItems(result.items)
+      } catch (error) {
+        if (!silent) toast.error((error as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [podName],
+  )
 
   useEffect(() => {
     load()
@@ -166,7 +173,7 @@ export function DeployTab() {
     setSubmitting(true)
     try {
       if (editing) {
-        await deployApi.update(editing.name, {
+        await deployApi.update(podName, editing.name, {
           repoUrl: form.repoUrl.trim(),
           branch: form.branch.trim(),
           subDir: form.subDir.trim(),
@@ -178,7 +185,7 @@ export function DeployTab() {
           timeoutSec: timeout,
           autoDeploy: form.autoDeploy,
         })
-        toast.success("部署配置已更新，实例正在重新构建")
+        toast.success("部署配置已更新，实例正在重新拉取代码")
       } else {
         const payload: CreateDeployPayload = {
           source: form.source,
@@ -194,8 +201,8 @@ export function DeployTab() {
           timeoutSec: timeout,
           autoDeploy: form.autoDeploy,
         }
-        await deployApi.create(payload)
-        toast.success("部署已创建，正在拉取仓库并启动实例")
+        await deployApi.create(podName, payload)
+        toast.success("部署已创建，正在 Pod 内拉取仓库并执行 deploy.sh")
       }
       setFormOpen(false)
       await load(true)
@@ -210,10 +217,10 @@ export function DeployTab() {
     setBusy(item.name)
     try {
       if (item.status === "running" || item.status === "pending") {
-        await deployApi.stop(item.name)
+        await deployApi.stop(podName, item.name)
         toast.success("部署已停止")
       } else {
-        await deployApi.start(item.name)
+        await deployApi.start(podName, item.name)
         toast.success("部署正在启动")
       }
       await load(true)
@@ -227,7 +234,7 @@ export function DeployTab() {
   async function handleRestart(item: DeployView) {
     setBusy(item.name)
     try {
-      await deployApi.restart(item.name)
+      await deployApi.restart(podName, item.name)
       toast.success("部署正在重启")
       await load(true)
     } catch (error) {
@@ -241,7 +248,7 @@ export function DeployTab() {
     if (!deleteTarget) return
     setDeleting(true)
     try {
-      await deployApi.remove(deleteTarget.name)
+      await deployApi.remove(podName, deleteTarget.name)
       toast.success("部署已删除")
       setDeleteTarget(null)
       await load(true)
@@ -266,7 +273,9 @@ export function DeployTab() {
               Webhook 说明
             </Button>
           </div>
-          <p className="mt-1 text-xs text-slate-400">从 Git 仓库拉取代码，构建并运行部署实例</p>
+          <p className="mt-1 text-xs text-slate-400">
+            在当前 Pod 内拉取仓库代码，并执行项目目录下的 deploy.sh
+          </p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4" />
@@ -275,7 +284,10 @@ export function DeployTab() {
       </div>
 
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-        当前平台尚未接入 Git 构建流水线：实例会先尝试拉取公开仓库源码归档，再以平台内置占位运行时启动；仓库、分支、健康检查等配置均已完整记录。
+        部署不会创建新的 Pod：平台会把仓库代码拉取到当前 Pod 的
+        <span className="mx-1 font-mono">/home/workspace/deployments/&lt;名称&gt;</span>
+        目录，并在该目录（或其子目录）执行 deploy.sh（依次尝试 deploy.sh、deploy/deploy.sh、start.sh）。
+        常驻服务的脚本需在前台持续运行，脚本退出即视为停止。
       </div>
 
       {/* 部署实例卡片列表 */}
@@ -300,6 +312,7 @@ export function DeployTab() {
               onRestart={() => handleRestart(item)}
               onEdit={() => openEdit(item)}
               onDelete={() => setDeleteTarget(item)}
+              onWebhook={() => setWebhookTarget(item)}
             />
           ))}
         </div>
@@ -311,7 +324,7 @@ export function DeployTab() {
           <DialogHeader>
             <DialogTitle>{editing ? `编辑部署 · ${editing.name}` : "创建部署"}</DialogTitle>
             <DialogDescription>
-              填写 Git 仓库与服务参数，提交后平台会拉取代码、构建并调度资源启动进程。
+              填写 Git 仓库与服务参数，提交后平台会在当前 Pod 内拉取代码并执行部署脚本。
             </DialogDescription>
           </DialogHeader>
 
@@ -505,7 +518,8 @@ export function DeployTab() {
           <DialogHeader>
             <DialogTitle>删除部署</DialogTitle>
             <DialogDescription>
-              将删除部署实例「{deleteTarget?.name}」及其集群工作负载，且不可恢复。
+              将停止部署进程「{deleteTarget?.name}」，并删除 Pod 内的代码目录
+              /home/workspace/deployments/{deleteTarget?.name}，且不可恢复。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -519,6 +533,9 @@ export function DeployTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Webhook 回调配置 */}
+      <WebhookDialog target={webhookTarget} onClose={() => setWebhookTarget(null)} />
 
       {/* 文档说明 */}
       <DocDialog type={doc} onClose={() => setDoc(null)} />
@@ -534,6 +551,7 @@ function DeployCard({
   onRestart,
   onEdit,
   onDelete,
+  onWebhook,
 }: {
   item: DeployView
   busy: boolean
@@ -541,6 +559,7 @@ function DeployCard({
   onRestart: () => void
   onEdit: () => void
   onDelete: () => void
+  onWebhook: () => void
 }) {
   const active = item.status === "running" || item.status === "pending"
   const badge = STATUS_STYLE[item.status] ?? STATUS_STYLE.notfound
@@ -576,6 +595,7 @@ function DeployCard({
               </span>
             )}
             <span>创建于 {formatTime(item.createdAt)}</span>
+            <span className="font-mono">/home/workspace/deployments/{item.name}</span>
           </div>
 
           {item.message && <p className="text-xs text-red-500">{item.message}</p>}
@@ -596,6 +616,12 @@ function DeployCard({
             <RefreshCw className="h-4 w-4" />
             重启
           </Button>
+          {item.autoDeploy && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={onWebhook}>
+              <Webhook className="h-4 w-4" />
+              Webhook
+            </Button>
+          )}
           <Button size="sm" variant="outline" disabled={busy} onClick={onEdit}>
             <Pencil className="h-4 w-4" />
             编辑
@@ -616,6 +642,84 @@ function DeployCard({
   )
 }
 
+// Webhook 回调配置弹窗：展示回调地址与密钥，复制到 Gitee / GitHub 仓库设置
+function WebhookDialog({ target, onClose }: { target: DeployView | null; onClose: () => void }) {
+  const visible = target !== null
+  const url = target
+    ? `${window.location.origin}${target.webhookPath}?token=${target.webhookToken}`
+    : ""
+
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success(`${label}已复制`)
+    } catch {
+      toast.error("复制失败，请手动选择文本复制")
+    }
+  }
+
+  return (
+    <Dialog open={visible} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Webhook 回调 · {target?.name}</DialogTitle>
+          <DialogDescription>
+            在 Git 仓库的 Webhook 设置中填入以下地址与密钥，推送代码后自动重新构建部署。
+          </DialogDescription>
+        </DialogHeader>
+
+        {target && (
+          <div className="space-y-4 text-sm">
+            <div className="space-y-1.5">
+              <Label>回调地址（Payload URL）</Label>
+              <div className="flex items-center gap-2">
+                <Input readOnly value={url} className="font-mono text-xs" />
+                <Button variant="outline" size="icon" onClick={() => copy(url, "回调地址")}>
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-slate-400">地址中已携带密钥，请勿公开分享</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>密钥（Secret / WebHook 密码）</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  readOnly
+                  value={target.webhookToken || "仅负责人 / 管理员可查看"}
+                  className="font-mono text-xs"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  disabled={!target.webhookToken}
+                  onClick={() => copy(target.webhookToken, "密钥")}
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-slate-400">
+                Gitee 填「WebHook 密码」；GitHub 填 Secret（平台按 HMAC-SHA256 校验签名）
+              </p>
+            </div>
+
+            <div className="space-y-1 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+              <p>1. 触发事件选择「Push」，内容类型为 application/json。</p>
+              <p>2. 只有推送到分支 {target.branch || "main"} 才会触发自动部署。</p>
+              <p>3. 平台需可被公网访问；本地部署请使用内网穿透工具映射 8081 端口。</p>
+              <p>4. 保存后可在仓库的 Webhook 页面点击「测试」验证回调是否成功。</p>
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button onClick={onClose}>完成</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // 部署教程 / Webhook 说明
 function DocDialog({ type, onClose }: { type: "tutorial" | "webhook" | null; onClose: () => void }) {
   return (
@@ -633,22 +737,23 @@ function DocDialog({ type, onClose }: { type: "tutorial" | "webhook" | null; onC
         {type === "webhook" ? (
           <div className="space-y-3 text-sm leading-6 text-slate-600">
             <p>1. 在创建部署时开启「push 自动部署」开关。</p>
-            <p>2. 由管理员在仓库（Gitee / GitHub）的 Webhook 设置中配置平台回调地址，并选择推送事件。</p>
-            <p>3. 开启后，向部署配置的分支推送代码会自动触发重新构建与部署。</p>
-            <p>4. 仅在部署配置中切换分支不会自动部署，需要重新保存或手动重启实例。</p>
+            <p>2. 创建成功后，在部署卡片右侧点击「Webhook」，复制回调地址与密钥。</p>
+            <p>3. 在 Gitee / GitHub 仓库的 Webhook 设置中新增回调：Payload URL 填回调地址，密码 / Secret 填密钥，触发事件选「Push」。</p>
+            <p>4. 向部署配置的分支推送代码后，平台校验通过即自动重新构建部署；推送其他分支会被忽略。</p>
+            <p>5. 仅在部署配置中切换分支不会自动部署，需要重新保存或手动重启实例。</p>
             <p className="text-xs text-slate-400">
-              私有仓库还需在仓库设置中填写对应的私有库 Token，公开仓库可留空。
+              平台需可被公网访问（本地环境可用内网穿透）；私有仓库还需在仓库设置中填写对应的私有库 Token，公开仓库可留空。
             </p>
           </div>
         ) : (
           <div className="space-y-3 text-sm leading-6 text-slate-600">
             <p>1. 点击「创建部署」，来源选择「绑仓库」，填写 Git 仓库地址（支持 Gitee / GitHub）。</p>
             <p>2. 名称留空时自动使用仓库名称；子目录用于代码不在仓库根目录的场景。</p>
-            <p>3. 选择部署类型：常驻服务会持续运行并在异常时自动重启；一次性脚本执行完成即退出。</p>
-            <p>4. 推理服务请选择调度类型「推理服务」并按需绑定 GPU；纯 API 转发服务可不绑定。</p>
-            <p>5. 健康检查路径可选：平台定时 GET 该地址，返回 200 判定健康，留空跳过探测。</p>
-            <p>6. 提交后平台拉取仓库代码、构建并启动进程，生成部署实例。</p>
-            <p>7. 实例运行后可在顶部菜单查看日志、监控与子域名；状态为 fatal 时查看日志并重新启动。</p>
+            <p>3. 提交后平台不会创建新 Pod，而是进入当前 Pod 拉取代码到 /home/workspace/deployments/&lt;名称&gt;。</p>
+            <p>4. 随后在代码目录（或子目录）依次查找 deploy.sh、deploy/deploy.sh、start.sh 并执行，日志写入 /home/workspace/.ssedeploy/&lt;名称&gt;/deploy.log。</p>
+            <p>5. 常驻服务的脚本需在前台持续运行：进程存活即「运行中」，脚本退出即「已停止」，非 0 退出码为 fatal。</p>
+            <p>6. 仓库为私有时填写访问 Token；容器内没有 git 时，平台会下载公开仓库源码归档后解压到工作区。</p>
+            <p>7. 可在 Web 终端或文件树中直接查看 /home/workspace/deployments 下的代码与部署日志。</p>
           </div>
         )}
 

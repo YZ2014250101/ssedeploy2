@@ -10,7 +10,7 @@ import (
 )
 
 // deployColumns 统一查询字段。
-const deployColumns = `id, namespace, name, owner_id, source, repo_url, branch, sub_dir, type,
+const deployColumns = `id, namespace, pod_name, name, owner_id, source, repo_url, branch, sub_dir, type,
 	schedule_type, gpu, token, health_path, timeout_sec, auto_deploy, webhook_secret, status, message, created_at, updated_at`
 
 // scanDeploy 把一行数据映射成 Deploy。
@@ -20,7 +20,7 @@ func scanDeploy(row interface{ Scan(...any) error }) (*model.Deploy, error) {
 		autoDeploy int
 	)
 	err := row.Scan(
-		&d.ID, &d.Namespace, &d.Name, &d.OwnerID, &d.Source, &d.RepoURL, &d.Branch, &d.SubDir,
+		&d.ID, &d.Namespace, &d.PodName, &d.Name, &d.OwnerID, &d.Source, &d.RepoURL, &d.Branch, &d.SubDir,
 		&d.Type, &d.ScheduleType, &d.GPU, &d.Token, &d.HealthPath, &d.TimeoutSec, &autoDeploy,
 		&d.WebhookSecret, &d.Status, &d.Message, &d.CreatedAt, &d.UpdatedAt,
 	)
@@ -37,10 +37,10 @@ func scanDeploy(row interface{ Scan(...any) error }) (*model.Deploy, error) {
 // CreateDeploy 新增一条部署记录。
 func (s *Store) CreateDeploy(d *model.Deploy) error {
 	res, err := s.DB.Exec(
-		`INSERT INTO deployments(namespace, name, owner_id, source, repo_url, branch, sub_dir, type,
+		`INSERT INTO deployments(namespace, pod_name, name, owner_id, source, repo_url, branch, sub_dir, type,
 			schedule_type, gpu, token, health_path, timeout_sec, auto_deploy, webhook_secret, status, message)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.Namespace, d.Name, d.OwnerID, d.Source, d.RepoURL, d.Branch, d.SubDir, d.Type,
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.Namespace, d.PodName, d.Name, d.OwnerID, d.Source, d.RepoURL, d.Branch, d.SubDir, d.Type,
 		d.ScheduleType, d.GPU, d.Token, d.HealthPath, d.TimeoutSec, boolToInt(d.AutoDeploy), d.WebhookSecret, d.Status, d.Message,
 	)
 	if err != nil {

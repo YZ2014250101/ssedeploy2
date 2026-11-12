@@ -209,7 +209,7 @@ export default function PodDetail() {
         {tab === "monitor" && <MonitorTab name={detail.name} />}
         {tab === "terminal" && <TerminalTab name={detail.name} />}
         {tab === "logs" && <LogsTab name={detail.name} />}
-        {tab === "deploy" && <DeployTab />}
+        {tab === "deploy" && <DeployTab podName={detail.name} />}
         {tab === "settings" && (
           <SettingsTab
             key={detail.name}

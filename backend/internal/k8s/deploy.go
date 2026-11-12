@@ -10,33 +10,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"ssedeploy/internal/model"
 	"ssedeploy/internal/store"
 )
 
 const (
-	// deployRuntimeImage 是部署实例的占位运行时镜像，随 K3s 离线包一起预加载。
-	// 平台尚未接入 Git 构建流水线：实例会先尝试用 busybox 拉取仓库源码归档，
-	// 再以 busybox httpd 作为占位服务对外提供健康检查端点。
-	deployRuntimeImage = "rancher/mirrored-library-busybox:1.37.0"
-	// deployKindLabel 标记该工作负载由「部署」模块创建，便于与普通 Pod 区分。
-	deployKindLabel = "ssedeploy.io/kind"
-	// deployKindValue 部署模块的工作负载取值。
-	deployKindValue = "deploy"
+	// deployAppRoot 是仓库代码在 Pod 工作区内的落地目录。
+	deployAppRoot = WorkspacePath + "/deployments"
+	// deployStateRoot 保存 run.sh / pid / 退出码 / 日志，避免污染应用目录。
+	deployStateRoot = WorkspacePath + "/.ssedeploy"
+	// deployMaxOutput 单次 exec 输出上限。
+	deployMaxOutput = 256 << 10
+	// deployFetchTimeout 源码归档下载超时。
+	deployFetchTimeout = 3 * time.Minute
 )
 
 // deployNameRe 与 Pod 名称规则一致，遵循 DNS-1123。
@@ -51,21 +47,30 @@ var (
 )
 
 // DeployService 负责部署实例的业务编排：
-// 数据库记录 + K8s 工作负载（常驻服务 -> Deployment，一次性脚本 -> Job）。
+// 数据库记录 + 在目标 Pod 内拉取代码并执行部署脚本（不再创建新的工作负载）。
 type DeployService struct {
 	client    *Client
 	store     *store.Store
+	pods      *PodService
 	namespace string
 }
 
 // NewDeployService 创建部署业务服务。
-func NewDeployService(client *Client, st *store.Store) *DeployService {
-	return &DeployService{client: client, store: st, namespace: client.Namespace}
+func NewDeployService(client *Client, st *store.Store, pods *PodService) *DeployService {
+	return &DeployService{client: client, store: st, pods: pods, namespace: client.Namespace}
 }
 
-// List 返回部署列表：管理员可见全部，普通用户仅本人创建。
-// 同时把集群里的真实运行状态回写到数据库。
-func (s *DeployService) List(ctx context.Context, userID int64, isAdmin bool) ([]model.DeployView, error) {
+// deployAppDir 返回部署代码在 Pod 内的目录。
+func deployAppDir(name string) string { return path.Join(deployAppRoot, name) }
+
+// deployStateDir 返回部署运行状态目录。
+func deployStateDir(name string) string { return path.Join(deployStateRoot, name) }
+
+// deployLogPath 返回部署日志路径（提示用户时可读）。
+func deployLogPath(name string) string { return path.Join(deployStateDir(name), "deploy.log") }
+
+// List 返回指定 Pod 下的部署列表，同时把 Pod 内的真实运行状态回写到数据库。
+func (s *DeployService) List(ctx context.Context, podName string, userID int64, isAdmin bool) ([]model.DeployView, error) {
 	records, err := s.store.ListDeploys(s.namespace)
 	if err != nil {
 		return nil, err
@@ -77,11 +82,12 @@ func (s *DeployService) List(ctx context.Context, userID int64, isAdmin bool) ([
 
 	views := make([]model.DeployView, 0, len(records))
 	for _, d := range records {
-		if !isAdmin && d.OwnerID != userID {
+		if d.PodName != podName {
 			continue
 		}
 		status, message := s.syncStatus(ctx, d)
 		views = append(views, model.DeployView{
+			PodName:      d.PodName,
 			Name:         d.Name,
 			Status:       status,
 			StatusText:   model.DeployStatusText(status),
@@ -98,7 +104,7 @@ func (s *DeployService) List(ctx context.Context, userID int64, isAdmin bool) ([
 			HealthPath:   d.HealthPath,
 			TimeoutSec:   d.TimeoutSec,
 			AutoDeploy:   d.AutoDeploy,
-			WebhookPath:  fmt.Sprintf("/api/v1/deployments/%s/webhook", d.Name),
+			WebhookPath:  fmt.Sprintf("/api/v1/pods/%s/deployments/%s/webhook", d.PodName, d.Name),
 			WebhookToken: webhookTokenFor(d, userID, isAdmin),
 			Owner:        ownerDisplay(users[d.OwnerID]),
 			MyRole:       deployRole(d.OwnerID, userID, isAdmin),
@@ -109,10 +115,13 @@ func (s *DeployService) List(ctx context.Context, userID int64, isAdmin bool) ([
 	return views, nil
 }
 
-// Create 创建部署实例：校验参数 → 拉起工作负载 → 写入数据库记录。
-func (s *DeployService) Create(ctx context.Context, req model.CreateDeployRequest, ownerID int64) (*model.Deploy, error) {
+// Create 创建部署实例：写库 → 在目标 Pod 内拉取代码并启动部署脚本。
+func (s *DeployService) Create(ctx context.Context, podName string, req model.CreateDeployRequest, ownerID int64) (*model.Deploy, error) {
 	if err := normalizeCreate(&req); err != nil {
 		return nil, err
+	}
+	if _, err := s.pods.runningPod(ctx, podName); err != nil {
+		return nil, fmt.Errorf("目标 Pod 当前不可用: %w", err)
 	}
 	if _, err := s.store.GetDeploy(s.namespace, req.Name); err == nil {
 		return nil, store.ErrDuplicate
@@ -120,10 +129,9 @@ func (s *DeployService) Create(ctx context.Context, req model.CreateDeployReques
 		return nil, err
 	}
 
-	s.client.ensureNamespace(ctx)
-
 	d := &model.Deploy{
 		Namespace:    s.namespace,
+		PodName:      podName,
 		Name:         req.Name,
 		OwnerID:      ownerID,
 		Source:       req.Source,
@@ -141,20 +149,20 @@ func (s *DeployService) Create(ctx context.Context, req model.CreateDeployReques
 		WebhookSecret: newWebhookSecret(),
 		Status:        model.DeployStatusPending,
 	}
-	if err := s.createWorkload(ctx, d, 1); err != nil {
+	if err := s.store.CreateDeploy(d); err != nil {
 		return nil, err
 	}
-	if err := s.store.CreateDeploy(d); err != nil {
-		// 数据库写入失败时回收刚刚创建的工作负载，避免留下孤儿资源
-		_ = s.deleteWorkload(context.Background(), d)
+	if err := s.launch(ctx, d); err != nil {
+		// 启动失败时不留下半成品记录，避免用户重复创建
+		_ = s.store.DeleteDeploy(s.namespace, d.Name)
 		return nil, err
 	}
 	return d, nil
 }
 
-// Update 编辑部署配置；工作负载会按新配置重建，运行中的实例保持运行。
-func (s *DeployService) Update(ctx context.Context, name string, req model.UpdateDeployRequest, userID int64, isAdmin bool) error {
-	record, err := s.access(ctx, name, userID, isAdmin)
+// Update 编辑部署配置；运行中的实例会按新配置重新拉取代码并重启脚本。
+func (s *DeployService) Update(ctx context.Context, podName, name string, req model.UpdateDeployRequest, userID int64, isAdmin bool) error {
+	record, err := s.access(ctx, podName, name, userID, isAdmin)
 	if err != nil {
 		return err
 	}
@@ -178,135 +186,75 @@ func (s *DeployService) Update(ctx context.Context, name string, req model.Updat
 	if err := validateDeploy(record); err != nil {
 		return err
 	}
+	if err := s.store.UpdateDeploy(record); err != nil {
+		return err
+	}
 
-	replicas := int32(1)
-	if record.Status == model.DeployStatusStopped {
-		replicas = 0
+	// 只有正在运行的实例才需要重新执行部署脚本
+	if record.Status == model.DeployStatusRunning || record.Status == model.DeployStatusPending {
+		return s.restart(ctx, record)
 	}
-	// 类型可能变化（Deployment <-> Job），先清理旧工作负载再按新配置重建
-	if err := s.deleteWorkload(ctx, record); err != nil {
-		return err
-	}
-	if err := s.createWorkload(ctx, record, replicas); err != nil {
-		return err
-	}
-	return s.store.UpdateDeploy(record)
+	return nil
 }
 
-// Delete 删除部署实例及其集群工作负载。
-func (s *DeployService) Delete(ctx context.Context, name string, userID int64, isAdmin bool) error {
-	record, err := s.access(ctx, name, userID, isAdmin)
+// Delete 删除部署实例：停止进程、清理 Pod 内目录，再删除记录。
+func (s *DeployService) Delete(ctx context.Context, podName, name string, userID int64, isAdmin bool) error {
+	record, err := s.access(ctx, podName, name, userID, isAdmin)
 	if err != nil {
 		return err
 	}
-	if err := s.deleteWorkload(ctx, record); err != nil {
-		return err
+	if pod, err := s.pods.runningPod(ctx, record.PodName); err == nil {
+		_ = s.stopProcess(ctx, pod, record)
+		_ = s.removeFiles(ctx, pod, record.Name)
 	}
 	return s.store.DeleteDeploy(s.namespace, name)
 }
 
-// Start 启动部署实例：常驻服务扩容到 1，一次性脚本重建 Job。
-func (s *DeployService) Start(ctx context.Context, name string, userID int64, isAdmin bool) error {
-	record, err := s.access(ctx, name, userID, isAdmin)
+// Start 在 Pod 内启动部署脚本。
+func (s *DeployService) Start(ctx context.Context, podName, name string, userID int64, isAdmin bool) error {
+	record, err := s.access(ctx, podName, name, userID, isAdmin)
 	if err != nil {
 		return err
 	}
-	if record.Type == model.DeployTypeJob {
-		_ = s.deleteWorkload(ctx, record)
-		if err := s.createWorkload(ctx, record, 1); err != nil {
-			return err
-		}
-		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "")
-	}
-
-	dep, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		if err := s.createWorkload(ctx, record, 1); err != nil {
-			return err
-		}
-		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "")
-	}
-	if err != nil {
-		return err
-	}
-	replicas := int32(1)
-	dep.Spec.Replicas = &replicas
-	if _, err := s.client.Kube.AppsV1().Deployments(s.namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("启动部署失败: %w", err)
-	}
-	return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "")
+	return s.restart(ctx, record)
 }
 
-// Stop 停止部署实例：常驻服务缩容到 0，一次性脚本直接删除 Job。
-func (s *DeployService) Stop(ctx context.Context, name string, userID int64, isAdmin bool) error {
-	record, err := s.access(ctx, name, userID, isAdmin)
+// Stop 停止 Pod 内的部署进程。
+func (s *DeployService) Stop(ctx context.Context, podName, name string, userID int64, isAdmin bool) error {
+	record, err := s.access(ctx, podName, name, userID, isAdmin)
 	if err != nil {
 		return err
 	}
-	if record.Type == model.DeployTypeJob {
-		if err := s.deleteWorkload(ctx, record); err != nil {
-			return err
-		}
-		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusStopped, "")
-	}
-
-	dep, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusStopped, "")
-	}
+	pod, err := s.pods.runningPod(ctx, record.PodName)
 	if err != nil {
-		return err
+		// Pod 本身没有运行中的实例，直接标记为已停止
+		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusStopped, "")
 	}
-	replicas := int32(0)
-	dep.Spec.Replicas = &replicas
-	if _, err := s.client.Kube.AppsV1().Deployments(s.namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("停止部署失败: %w", err)
+	if err := s.stopProcess(ctx, pod, record); err != nil {
+		return err
 	}
 	return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusStopped, "")
 }
 
-// Restart 重新拉起部署实例。
-func (s *DeployService) Restart(ctx context.Context, name string, userID int64, isAdmin bool) error {
-	record, err := s.access(ctx, name, userID, isAdmin)
+// Restart 重新拉取代码并执行部署脚本。
+func (s *DeployService) Restart(ctx context.Context, podName, name string, userID int64, isAdmin bool) error {
+	record, err := s.access(ctx, podName, name, userID, isAdmin)
 	if err != nil {
 		return err
 	}
-	if record.Type == model.DeployTypeJob {
-		_ = s.deleteWorkload(ctx, record)
-		if err := s.createWorkload(ctx, record, 1); err != nil {
-			return err
-		}
-		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "")
-	}
-
-	dep, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		if err := s.createWorkload(ctx, record, 1); err != nil {
-			return err
-		}
-		return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "")
-	}
-	if err != nil {
-		return err
-	}
-	if dep.Spec.Template.Annotations == nil {
-		dep.Spec.Template.Annotations = map[string]string{}
-	}
-	// 与 Pod 重启一致：修改模板注解触发 Recreate 重建
-	dep.Spec.Template.Annotations["ssedeploy.io/restarted-at"] = timeNow()
-	if _, err := s.client.Kube.AppsV1().Deployments(s.namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("重启部署失败: %w", err)
-	}
-	return s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "")
+	return s.restart(ctx, record)
 }
 
 // HandleWebhook 处理 Git 平台推送回调：
-// 校验密钥 / 签名 → 判断分支 → 重建工作负载。
+// 校验密钥 / 签名 → 判断分支 → 在 Pod 内重新执行部署脚本。
 // triggered=false 表示本次推送被忽略（分支不匹配）。
-func (s *DeployService) HandleWebhook(ctx context.Context, name, token, signature string, body []byte) (bool, error) {
+func (s *DeployService) HandleWebhook(ctx context.Context, podName, name, token, signature string, body []byte) (bool, error) {
 	record, err := s.store.GetDeploy(s.namespace, name)
 	if err != nil {
 		return false, err
+	}
+	if record.PodName != podName {
+		return false, store.ErrNotFound
 	}
 	if record.WebhookSecret == "" || !record.AutoDeploy {
 		return false, ErrWebhookDisabled
@@ -319,14 +267,153 @@ func (s *DeployService) HandleWebhook(ctx context.Context, name, token, signatur
 		return false, nil
 	}
 
-	if err := s.deleteWorkload(ctx, record); err != nil {
-		return false, err
-	}
-	if err := s.createWorkload(ctx, record, 1); err != nil {
+	if err := s.restart(ctx, record); err != nil {
 		return false, err
 	}
 	_ = s.store.UpdateDeployStatus(s.namespace, name, model.DeployStatusPending, "Webhook 触发重新部署")
 	return true, nil
+}
+
+// restart 先停止旧进程，再按当前配置重新拉取代码并启动。
+func (s *DeployService) restart(ctx context.Context, d *model.Deploy) error {
+	if pod, err := s.pods.runningPod(ctx, d.PodName); err == nil {
+		_ = s.stopProcess(ctx, pod, d)
+	}
+	if err := s.launch(ctx, d); err != nil {
+		_ = s.store.UpdateDeployStatus(s.namespace, d.Name, model.DeployStatusFatal, err.Error())
+		return err
+	}
+	return s.store.UpdateDeployStatus(s.namespace, d.Name, model.DeployStatusPending, "")
+}
+
+// launch 准备代码 + 写入 run.sh + 后台拉起。
+func (s *DeployService) launch(ctx context.Context, d *model.Deploy) error {
+	pod, err := s.pods.runningPod(ctx, d.PodName)
+	if err != nil {
+		return fmt.Errorf("目标 Pod 当前不可用: %w", err)
+	}
+
+	hasGit := s.podHasGit(ctx, pod)
+	// 容器里没有 git 时，由后端下载公开仓库源码归档并解压进 Pod
+	if d.Source == model.DeploySourceRepo && strings.TrimSpace(d.RepoURL) != "" && !hasGit {
+		if err := s.syncArchive(ctx, pod, d); err != nil {
+			return err
+		}
+	}
+
+	script := buildRunScript(d, hasGit)
+	if err := s.writeScript(ctx, pod, d, script); err != nil {
+		return err
+	}
+	return s.spawn(ctx, pod, d)
+}
+
+// podHasGit 检查 Pod 主容器是否安装了 git。
+func (s *DeployService) podHasGit(ctx context.Context, pod *corev1.Pod) bool {
+	_, err := s.pods.execCapture(ctx, pod, []string{"/bin/sh", "-c", "command -v git >/dev/null 2>&1"}, nil, 1024)
+	return err == nil
+}
+
+// syncArchive 下载源码归档并流式解压到 Pod 内的应用目录（仅公开仓库）。
+func (s *DeployService) syncArchive(ctx context.Context, pod *corev1.Pod, d *model.Deploy) error {
+	src := archiveURL(d.RepoURL, d.Branch, d.Token)
+	if src == "" {
+		return fmt.Errorf("容器内未安装 git，且无法识别仓库 %s 的源码归档地址", d.RepoURL)
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, deployFetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, src, nil)
+	if err != nil {
+		return fmt.Errorf("构建源码下载请求失败: %w", err)
+	}
+	req.Header.Set("User-Agent", "ssedeploy")
+	if d.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+d.Token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("下载源码归档失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载源码归档失败：HTTP %d（仓库可能存在或为私有仓库）", resp.StatusCode)
+	}
+	// Gitee 对匿名归档请求会返回登录/验证网页，这里提前拦截并给出可操作提示
+	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/html") {
+		return fmt.Errorf("下载源码归档失败：仓库返回了网页而不是压缩包，请填写该仓库的访问 Token 后重试")
+	}
+
+	appDir := deployAppDir(d.Name)
+	script := `mkdir -p "$1" && rm -rf "$1"/* "$1"/.[!.]* 2>/dev/null; tar -xzf - -C "$1" --strip-components=1`
+	if _, err := s.pods.execCapture(fetchCtx, pod, []string{"/bin/sh", "-c", script, "sh", appDir}, resp.Body, deployMaxOutput); err != nil {
+		return fmt.Errorf("解压源码归档失败: %w", err)
+	}
+	return nil
+}
+
+// writeScript 把 run.sh 写入 Pod 内的状态目录。
+func (s *DeployService) writeScript(ctx context.Context, pod *corev1.Pod, d *model.Deploy, script string) error {
+	stateDir := deployStateDir(d.Name)
+	const cmd = `mkdir -p "$1" && cat > "$2" && chmod +x "$2"`
+	_, err := s.pods.execCapture(
+		ctx, pod,
+		[]string{"/bin/sh", "-c", cmd, "sh", stateDir, path.Join(stateDir, "run.sh")},
+		strings.NewReader(script), deployMaxOutput,
+	)
+	if err != nil {
+		return fmt.Errorf("写入部署脚本失败: %w", err)
+	}
+	return nil
+}
+
+// spawn 以独立进程组后台运行 run.sh，避免 HTTP 请求结束后进程被回收。
+func (s *DeployService) spawn(ctx context.Context, pod *corev1.Pod, d *model.Deploy) error {
+	stateDir := deployStateDir(d.Name)
+	script := fmt.Sprintf(`cd %s || exit 1
+rm -f exit pid
+if command -v setsid >/dev/null 2>&1; then
+  nohup setsid /bin/sh ./run.sh >/dev/null 2>&1 < /dev/null &
+else
+  nohup /bin/sh ./run.sh >/dev/null 2>&1 < /dev/null &
+fi
+echo started`, shellQuote(stateDir))
+	out, err := s.pods.execCapture(ctx, pod, []string{"/bin/sh", "-c", script}, nil, deployMaxOutput)
+	if err != nil {
+		return fmt.Errorf("启动部署进程失败: %w", err)
+	}
+	if !strings.Contains(out, "started") {
+		return fmt.Errorf("启动部署进程失败")
+	}
+	return nil
+}
+
+// stopProcess 杀掉部署进程组，并写入 stopped 退出标记。
+func (s *DeployService) stopProcess(ctx context.Context, pod *corev1.Pod, d *model.Deploy) error {
+	script := fmt.Sprintf(`S=%s
+mkdir -p "$S"
+if [ -f "$S/pid" ]; then
+  p=$(cat "$S/pid" 2>/dev/null)
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+    kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  fi
+fi
+echo stopped > "$S/exit"
+rm -f "$S/pid"
+echo ok`, shellQuote(deployStateDir(d.Name)))
+	_, err := s.pods.execCapture(ctx, pod, []string{"/bin/sh", "-c", script}, nil, deployMaxOutput)
+	if err != nil {
+		return fmt.Errorf("停止部署进程失败: %w", err)
+	}
+	return nil
+}
+
+// removeFiles 删除部署在 Pod 内的代码目录与状态目录。
+func (s *DeployService) removeFiles(ctx context.Context, pod *corev1.Pod, name string) error {
+	script := fmt.Sprintf(`rm -rf %s %s && echo ok`, shellQuote(deployAppDir(name)), shellQuote(deployStateDir(name)))
+	_, err := s.pods.execCapture(ctx, pod, []string{"/bin/sh", "-c", script}, nil, deployMaxOutput)
+	return err
 }
 
 // verifyWebhook 支持三种校验方式：
@@ -374,11 +461,14 @@ func webhookTokenFor(d *model.Deploy, userID int64, isAdmin bool) string {
 	return ""
 }
 
-// access 读取部署记录并校验归属：管理员可操作全部，普通用户仅限本人。
-func (s *DeployService) access(_ context.Context, name string, userID int64, isAdmin bool) (*model.Deploy, error) {
+// access 读取部署记录并校验归属与所属 Pod。
+func (s *DeployService) access(_ context.Context, podName, name string, userID int64, isAdmin bool) (*model.Deploy, error) {
 	record, err := s.store.GetDeploy(s.namespace, name)
 	if err != nil {
 		return nil, err
+	}
+	if record.PodName != podName {
+		return nil, store.ErrNotFound
 	}
 	if !isAdmin && record.OwnerID != userID {
 		return nil, ErrPodForbidden
@@ -386,7 +476,7 @@ func (s *DeployService) access(_ context.Context, name string, userID int64, isA
 	return record, nil
 }
 
-// syncStatus 读取集群真实状态并回写数据库，返回最新状态与失败原因。
+// syncStatus 读取 Pod 内真实状态并回写数据库，返回最新状态与补充说明。
 func (s *DeployService) syncStatus(ctx context.Context, d *model.Deploy) (string, string) {
 	status, message := s.calcStatus(ctx, d)
 	if status != "" && (status != d.Status || message != d.Message) {
@@ -395,197 +485,176 @@ func (s *DeployService) syncStatus(ctx context.Context, d *model.Deploy) (string
 	return status, message
 }
 
-// calcStatus 根据工作负载与 Pod 状态计算部署状态。
+// calcStatus 根据 Pod 内的 pid / 退出码文件计算部署状态。
 func (s *DeployService) calcStatus(ctx context.Context, d *model.Deploy) (string, string) {
-	if d.Type == model.DeployTypeJob {
-		job, err := s.client.Kube.BatchV1().Jobs(s.namespace).Get(ctx, d.Name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			if d.Status == model.DeployStatusStopped {
-				return model.DeployStatusStopped, ""
-			}
-			return model.DeployStatusNotFound, "Job 已被删除"
-		}
-		if err != nil {
-			return d.Status, err.Error()
-		}
-		if job.Status.Succeeded > 0 {
-			return model.DeployStatusSucceeded, ""
-		}
-		if job.Status.Failed > 0 && job.Status.Active == 0 {
-			return model.DeployStatusFatal, "一次性脚本执行失败"
-		}
-		return model.DeployStatusRunning, ""
-	}
-
-	dep, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, d.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return model.DeployStatusNotFound, "Deployment 已被删除"
-	}
+	pod, err := s.pods.runningPod(ctx, d.PodName)
 	if err != nil {
-		return d.Status, err.Error()
+		return model.DeployStatusStopped, "Pod 未运行：" + err.Error()
 	}
-	if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
-		return model.DeployStatusStopped, ""
+	state, err := s.stateSnapshot(ctx, pod, d.Name)
+	if err != nil {
+		return model.DeployStatusFatal, "读取部署状态失败：" + err.Error()
 	}
-
-	pods, err := s.client.Kube.CoreV1().Pods(s.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: appLabel + "=" + d.Name + "," + ManagedLabel + "=true",
-	})
-	if err == nil {
-		for i := range pods.Items {
-			if reason := podFailReason(&pods.Items[i]); reason != "" {
-				return model.DeployStatusFatal, "服务启动失败：" + reason
-			}
-		}
-	}
-	if dep.Status.ReadyReplicas > 0 {
+	switch {
+	case state == "running":
 		return model.DeployStatusRunning, ""
+	case state == "pending":
+		return model.DeployStatusPending, "部署脚本执行中"
+	case state == "none":
+		if d.Status == model.DeployStatusStopped {
+			return model.DeployStatusStopped, ""
+		}
+		return model.DeployStatusNotFound, "该 Pod 内尚未执行部署脚本"
+	case strings.HasPrefix(state, "exit:"):
+		code := strings.TrimPrefix(state, "exit:")
+		switch {
+		case code == "stopped":
+			return model.DeployStatusStopped, ""
+		case code == "0":
+			if d.Type == model.DeployTypeJob {
+				return model.DeployStatusSucceeded, ""
+			}
+			return model.DeployStatusStopped, "部署脚本已退出（退出码 0）"
+		default:
+			return model.DeployStatusFatal, fmt.Sprintf("部署脚本执行失败（退出码 %s），日志：%s", code, deployLogPath(d.Name))
+		}
 	}
-	return model.DeployStatusPending, "容器启动中"
+	return model.DeployStatusPending, ""
 }
 
-// createWorkload 按部署类型创建 Deployment 或 Job。
-func (s *DeployService) createWorkload(ctx context.Context, d *model.Deploy, replicas int32) error {
-	labels := map[string]string{
-		appLabel:        d.Name,
-		ManagedLabel:    "true",
-		deployKindLabel: deployKindValue,
+// stateSnapshot 读取 pid / 退出码，返回 running / pending / none / exit:<code>。
+func (s *DeployService) stateSnapshot(ctx context.Context, pod *corev1.Pod, name string) (string, error) {
+	script := fmt.Sprintf(`S=%s
+if [ -f "$S/pid" ]; then
+  p=$(cat "$S/pid" 2>/dev/null)
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo running; exit 0; fi
+fi
+if [ -f "$S/exit" ]; then
+  echo "exit:$(cat "$S/exit" 2>/dev/null)"
+  exit 0
+fi
+if [ -f "$S/run.sh" ]; then echo pending; exit 0; fi
+echo none`, shellQuote(deployStateDir(name)))
+	out, err := s.pods.execCapture(ctx, pod, []string{"/bin/sh", "-c", script}, nil, deployMaxOutput)
+	if err != nil {
+		return "", err
 	}
-	annotations := map[string]string{
-		"ssedeploy.io/owner-id":        fmt.Sprintf("%d", d.OwnerID),
-		"ssedeploy.io/created-by":      "ssedeploy",
-		"ssedeploy.io/deploy-source":   d.Source,
-		"ssedeploy.io/deploy-repo":     d.RepoURL,
-		"ssedeploy.io/deploy-branch":   d.Branch,
-		"ssedeploy.io/deploy-sub-dir":  d.SubDir,
-		"ssedeploy.io/deploy-type":     d.Type,
-		"ssedeploy.io/deploy-schedule": d.ScheduleType,
-		"ssedeploy.io/deploy-gpu":      d.GPU,
-	}
-	container := s.buildContainer(d)
-	podSpec := corev1.PodSpec{
-		Containers: []corev1.Container{container},
-		Volumes: []corev1.Volume{
-			{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		},
-	}
-
-	switch d.Type {
-	case model.DeployTypeJob:
-		backoff := int32(1)
-		job := &batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: d.Name, Namespace: s.namespace, Labels: labels, Annotations: annotations},
-			Spec: batchv1.JobSpec{
-				BackoffLimit: &backoff,
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: labels},
-					Spec:       withRestartPolicy(podSpec, corev1.RestartPolicyNever),
-				},
-			},
-		}
-		if _, err := s.client.Kube.BatchV1().Jobs(s.namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("创建一次性脚本失败: %w", err)
-		}
-		return nil
-	default:
-		dep := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: d.Name, Namespace: s.namespace, Labels: labels, Annotations: annotations},
-			Spec: appsv1.DeploymentSpec{
-				Replicas: &replicas,
-				Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
-				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{appLabel: d.Name}},
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: labels},
-					Spec:       podSpec,
-				},
-			},
-		}
-		if _, err := s.client.Kube.AppsV1().Deployments(s.namespace).Create(ctx, dep, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("创建部署失败: %w", err)
-		}
-		return nil
-	}
+	return strings.TrimSpace(out), nil
 }
 
-// buildContainer 构造部署实例的容器：拉取源码归档（可选）+ 占位运行时。
-func (s *DeployService) buildContainer(d *model.Deploy) corev1.Container {
-	srcURL := archiveURL(d.RepoURL, d.Branch)
-	script := serviceScript
-	if d.Type == model.DeployTypeJob {
-		script = jobScript
-	}
+// buildRunScript 生成 Pod 内的部署脚本。
+//
+// 脚本职责：拉取代码（git 优先）→ 进入子目录 → 执行 deploy.sh / deploy/deploy.sh / start.sh。
+// 常驻服务的脚本需在前台持续运行；脚本退出后状态会变为「已停止」，非 0 退出码为 fatal。
+func buildRunScript(d *model.Deploy, hasGit bool) string {
+	appDir := deployAppDir(d.Name)
+	stateDir := deployStateDir(d.Name)
+	authRepo := authRepoURL(d.RepoURL, d.Token)
 
-	env := []corev1.EnvVar{
-		{Name: "SSD_NAME", Value: d.Name},
-		{Name: "SSD_REPO_URL", Value: d.RepoURL},
-		{Name: "SSD_BRANCH", Value: d.Branch},
-		{Name: "SSD_SUB_DIR", Value: d.SubDir},
-		{Name: "SSD_SRC_URL", Value: srcURL},
-		{Name: "SSD_HEALTH_PATH", Value: d.HealthPath},
-		{Name: "SSD_GPU", Value: d.GPU},
-		{Name: "SSD_SCHEDULE_TYPE", Value: d.ScheduleType},
-	}
-
-	container := corev1.Container{
-		Name:            mainContainer,
-		Image:           deployRuntimeImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"/bin/sh", "-c", script},
-		Env:             env,
-		WorkingDir:      "/workspace",
-		Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
-		VolumeMounts:    []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resourceMustParse("100m"),
-				corev1.ResourceMemory: resourceMustParse("128Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resourceMustParse("1"),
-				corev1.ResourceMemory: resourceMustParse("1Gi"),
-			},
-		},
-	}
-
-	// 只有常驻服务且配置了健康检查路径时才注入探针：
-	// 探针失败会被 K8s 判定为不健康并自动重启容器。
-	if d.Type != model.DeployTypeJob && strings.TrimSpace(d.HealthPath) != "" {
-		timeout := int32(d.TimeoutSec)
-		if timeout <= 0 {
-			timeout = 5
+	fetchBlock := ""
+	if d.Source == model.DeploySourceRepo && strings.TrimSpace(d.RepoURL) != "" {
+		if hasGit {
+			fetchBlock = `echo "[ssedeploy] 拉取仓库 $SSD_REPO_URL 分支 $SSD_BRANCH"
+if [ -d "$APP/.git" ]; then
+  git -C "$APP" remote set-url origin "$AUTH_REPO" || true
+  if ! git -C "$APP" fetch --depth 1 origin "$SSD_BRANCH"; then echo "[ssedeploy] git fetch 失败"; exit 1; fi
+  if ! git -C "$APP" reset --hard FETCH_HEAD; then echo "[ssedeploy] git reset 失败"; exit 1; fi
+  git -C "$APP" clean -fdx || true
+else
+  rm -rf "$APP"
+  mkdir -p "$(dirname "$APP")"
+  if ! git clone --depth 1 --branch "$SSD_BRANCH" "$AUTH_REPO" "$APP"; then
+    echo "[ssedeploy] git clone 失败：请检查仓库地址、分支与访问 Token"
+    exit 1
+  fi
+fi
+echo "[ssedeploy] 代码已更新到 $APP"
+`
+		} else {
+			fetchBlock = `echo "[ssedeploy] 容器内未安装 git，使用平台下载的源码归档"
+`
 		}
-		probe := &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: d.HealthPath,
-					Port: intstr.FromString("http"),
-				},
-			},
-			TimeoutSeconds:   timeout,
-			PeriodSeconds:    10,
-			FailureThreshold: 3,
-		}
-		container.ReadinessProbe = probe
-		container.LivenessProbe = probe.DeepCopy()
 	}
-	return container
+
+	return fmt.Sprintf(`#!/bin/sh
+set -u
+APP=%s
+STATE=%s
+LOG="$STATE/deploy.log"
+EXIT="$STATE/exit"
+PID="$STATE/pid"
+AUTH_REPO=%s
+
+mkdir -p "$STATE" "$APP"
+rm -f "$EXIT" "$PID"
+echo $$ > "$PID"
+trap 'code=$?; echo "$code" > "$EXIT"; rm -f "$PID"' EXIT
+: > "$LOG"
+exec >>"$LOG" 2>&1
+
+export SSD_NAME=%s
+export SSD_POD=%s
+export SSD_REPO_URL=%s
+export SSD_BRANCH=%s
+export SSD_SUB_DIR=%s
+export SSD_TYPE=%s
+export SSD_GPU=%s
+export SSD_SCHEDULE_TYPE=%s
+export SSD_HEALTH_PATH=%s
+export SSD_TIMEOUT_SEC=%s
+export SSD_APP_DIR="$APP"
+export SSD_STATE_DIR="$STATE"
+
+echo "[ssedeploy] $(date '+%%Y-%%m-%%d %%H:%%M:%%S') 开始部署 $SSD_NAME（Pod $SSD_POD）"
+%s
+RUN_DIR="$APP"
+if [ -n "${SSD_SUB_DIR:-}" ]; then RUN_DIR="$APP/$SSD_SUB_DIR"; fi
+cd "$RUN_DIR" || { echo "[ssedeploy] 代码目录不存在：$RUN_DIR"; exit 1; }
+
+SCRIPT=""
+for f in "$RUN_DIR/deploy.sh" "$RUN_DIR/deploy/deploy.sh" "$RUN_DIR/start.sh"; do
+  if [ -f "$f" ]; then SCRIPT="$f"; break; fi
+done
+if [ -z "$SCRIPT" ]; then
+  echo "[ssedeploy] 未找到部署脚本：已尝试 deploy.sh、deploy/deploy.sh、start.sh"
+  exit 2
+fi
+
+echo "[ssedeploy] 执行部署脚本 $SCRIPT"
+if [ -x "$SCRIPT" ]; then "$SCRIPT"; else /bin/sh "$SCRIPT"; fi
+code=$?
+echo "[ssedeploy] 部署脚本退出，退出码 $code"
+exit "$code"
+`,
+		shellQuote(appDir),
+		shellQuote(stateDir),
+		shellQuote(authRepo),
+		shellQuote(d.Name),
+		shellQuote(d.PodName),
+		shellQuote(d.RepoURL),
+		shellQuote(d.Branch),
+		shellQuote(d.SubDir),
+		shellQuote(d.Type),
+		shellQuote(d.GPU),
+		shellQuote(d.ScheduleType),
+		shellQuote(d.HealthPath),
+		shellQuote(fmt.Sprintf("%d", d.TimeoutSec)),
+		fetchBlock,
+	)
 }
 
-// deleteWorkload 删除部署对应的 Deployment / Job，不存在时视为成功。
-func (s *DeployService) deleteWorkload(ctx context.Context, d *model.Deploy) error {
-	policy := metav1.DeletePropagationBackground
-	if d.Type == model.DeployTypeJob {
-		err := s.client.Kube.BatchV1().Jobs(s.namespace).Delete(ctx, d.Name, metav1.DeleteOptions{PropagationPolicy: &policy})
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("删除一次性脚本失败: %w", err)
-		}
-		return nil
+// authRepoURL 把访问 Token 注入 HTTPS 仓库地址（私有仓库）。
+func authRepoURL(repoURL, token string) string {
+	raw := strings.TrimSpace(repoURL)
+	if raw == "" || strings.TrimSpace(token) == "" {
+		return raw
 	}
-	err := s.client.Kube.AppsV1().Deployments(s.namespace).Delete(ctx, d.Name, metav1.DeleteOptions{PropagationPolicy: &policy})
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("删除部署失败: %w", err)
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.Scheme == "" {
+		return raw
 	}
-	return nil
+	parsed.User = url.UserPassword("oauth2", strings.TrimSpace(token))
+	return parsed.String()
 }
 
 // normalizeCreate 填充默认值并校验创建参数。
@@ -643,27 +712,44 @@ func validateDeploy(d *model.Deploy) error {
 	return nil
 }
 
-// archiveURL 根据仓库地址生成源码归档下载地址。
-// 公开的 GitHub / Gitee 仓库无需 git 客户端即可通过 busybox wget 拉取源码。
-func archiveURL(repoURL, branch string) string {
-	raw := strings.TrimSuffix(strings.TrimSpace(repoURL), "/")
-	raw = strings.TrimSuffix(raw, ".git")
-	if raw == "" {
+// archiveURL 生成源码归档下载地址（GitHub / Gitee）。
+// 容器内没有 git 时由后端下载并解压到 Pod，公开仓库无需任何客户端。
+func archiveURL(repoURL, branch, token string) string {
+	owner, repo, host := splitRepo(repoURL)
+	if owner == "" || repo == "" {
 		return ""
 	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
-		return ""
+	if branch == "" {
+		branch = "main"
 	}
-	host := strings.ToLower(parsed.Host)
 	switch {
 	case strings.Contains(host, "github.com"):
-		return fmt.Sprintf("%s/archive/refs/heads/%s.tar.gz", raw, branch)
+		return fmt.Sprintf("https://api.github.com/repos/%s/%s/tarball/%s", owner, repo, url.PathEscape(branch))
 	case strings.Contains(host, "gitee.com"):
-		return fmt.Sprintf("%s/repository/archive/%s.tar.gz", raw, branch)
+		// 有 Token 时走 API v5（公开仓库同样要求令牌），否则退回网页归档地址
+		if token = strings.TrimSpace(token); token != "" {
+			return fmt.Sprintf("https://gitee.com/api/v5/repos/%s/%s/tarball?ref=%s&access_token=%s",
+				owner, repo, url.QueryEscape(branch), url.QueryEscape(token))
+		}
+		return fmt.Sprintf("https://gitee.com/%s/%s/repository/archive/%s.tar.gz", owner, repo, url.PathEscape(branch))
 	default:
 		return ""
 	}
+}
+
+// splitRepo 从仓库地址中解析 owner / repo / host。
+func splitRepo(repoURL string) (owner, repo, host string) {
+	raw := strings.TrimSuffix(strings.TrimSpace(repoURL), "/")
+	raw = strings.TrimSuffix(raw, ".git")
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "", "", ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 2 {
+		return "", "", ""
+	}
+	return parts[0], parts[1], strings.ToLower(parsed.Host)
 }
 
 // repoName 从仓库地址中提取仓库名，作为部署名称的默认值。
@@ -723,99 +809,3 @@ func defaultString(value, fallback string) string {
 	}
 	return value
 }
-
-// podFailReason 提取 Pod 不可用的原因，未失败时返回空串。
-func podFailReason(p *corev1.Pod) string {
-	if p.Status.Phase == corev1.PodFailed {
-		if p.Status.Message != "" {
-			return p.Status.Message
-		}
-		return "Pod 已失败"
-	}
-	check := func(statuses []corev1.ContainerStatus) string {
-		for _, st := range statuses {
-			if st.State.Waiting == nil {
-				continue
-			}
-			switch st.State.Waiting.Reason {
-			case "ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError", "InvalidImageName":
-				return st.State.Waiting.Reason
-			}
-		}
-		return ""
-	}
-	if reason := check(p.Status.InitContainerStatuses); reason != "" {
-		return reason
-	}
-	return check(p.Status.ContainerStatuses)
-}
-
-// withRestartPolicy 返回设置了重启策略的 PodSpec 副本。
-func withRestartPolicy(spec corev1.PodSpec, policy corev1.RestartPolicy) corev1.PodSpec {
-	spec.RestartPolicy = policy
-	return spec
-}
-
-// resourceMustParse 解析资源用量，失败时返回 0 值（不会触发 panic）。
-func resourceMustParse(value string) resource.Quantity {
-	q, err := resource.ParseQuantity(value)
-	if err != nil {
-		return resource.Quantity{}
-	}
-	return q
-}
-
-// timeNow 返回 RFC3339 时间戳，用于触发重启。
-func timeNow() string {
-	return time.Now().Format(time.RFC3339)
-}
-
-// 说明：部署实例运行的是平台内置占位运行时。
-// 平台尚未接入 Git 构建流水线，因此容器会：
-//  1. 用 busybox wget 下载 GitHub / Gitee 的源码归档并解压到 /workspace（公开仓库）；
-//  2. 以 busybox httpd 监听 8080，提供 / 与健康检查路径，模拟服务的持续运行。
-//
-// serviceScript 常驻服务启动脚本。
-const serviceScript = `set -u
-echo "[ssedeploy] 部署 ${SSD_NAME} 启动"
-echo "[ssedeploy] 仓库=${SSD_REPO_URL:-本地} 分支=${SSD_BRANCH} 子目录=${SSD_SUB_DIR:-/}"
-mkdir -p /workspace /www
-echo ok > /www/index.html
-if [ -n "${SSD_HEALTH_PATH:-}" ]; then
-  mkdir -p "/www$(dirname "$SSD_HEALTH_PATH")"
-  echo ok > "/www${SSD_HEALTH_PATH}"
-fi
-if [ -n "${SSD_SRC_URL:-}" ]; then
-  # 源码拉取放到后台，避免外网不可达时阻塞服务启动
-  (
-    if wget -q -T 20 -t 1 -O /tmp/src.tar.gz "$SSD_SRC_URL"; then
-      if tar -xzf /tmp/src.tar.gz -C /workspace --strip-components=1 2>/dev/null; then
-        echo "[ssedeploy] 源码已解压到 /workspace"
-      else
-        echo "[ssedeploy] 源码解压失败，继续使用占位运行时"
-      fi
-    else
-      echo "[ssedeploy] 源码拉取失败（私有仓库或网络不可达），继续使用占位运行时"
-    fi
-  ) &
-fi
-echo "[ssedeploy] 占位运行时监听 8080"
-exec httpd -f -p 8080 -h /www
-`
-
-// jobScript 一次性脚本启动脚本：执行完成后容器退出。
-const jobScript = `set -u
-echo "[ssedeploy] 一次性脚本 ${SSD_NAME} 开始执行"
-echo "[ssedeploy] 仓库=${SSD_REPO_URL:-本地} 分支=${SSD_BRANCH} 子目录=${SSD_SUB_DIR:-/}"
-mkdir -p /workspace
-if [ -n "${SSD_SRC_URL:-}" ]; then
-  if wget -q -T 20 -t 1 -O /tmp/src.tar.gz "$SSD_SRC_URL"; then
-    tar -xzf /tmp/src.tar.gz -C /workspace --strip-components=1 2>/dev/null || true
-  else
-    echo "[ssedeploy] 源码拉取失败，跳过"
-  fi
-fi
-ls -la /workspace || true
-echo "[ssedeploy] 一次性脚本执行完成"
-exit 0
-`

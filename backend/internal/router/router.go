@@ -47,7 +47,7 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 
 	// 部署 Webhook 回调：由 Git 平台（Gitee / GitHub）直接调用，不经过登录态，
 	// 依靠部署实例的独立 token 或 X-Hub-Signature-256 签名校验。
-	api.POST("/deployments/:name/webhook", h.DeploymentWebhook)
+	api.POST("/pods/:name/deployments/:deploy/webhook", h.DeploymentWebhook)
 
 	auth := api.Group("")
 	auth.Use(middleware.Auth(cfg.JWTSecret))
@@ -93,14 +93,14 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.POST("/pods/:name/stop", h.StopPod)
 		auth.POST("/pods/:name/restart", h.RestartPod)
 
-		// 部署实例（Git 仓库 -> 构建 -> 工作负载）
-		auth.GET("/deployments", h.ListDeployments)
-		auth.POST("/deployments", h.CreateDeployment)
-		auth.PUT("/deployments/:name", h.UpdateDeployment)
-		auth.DELETE("/deployments/:name", h.DeleteDeployment)
-		auth.POST("/deployments/:name/start", h.StartDeployment)
-		auth.POST("/deployments/:name/stop", h.StopDeployment)
-		auth.POST("/deployments/:name/restart", h.RestartDeployment)
+		// 部署实例：部署脚本在指定 Pod 的工作区内拉取代码并执行 deploy.sh
+		auth.GET("/pods/:name/deployments", h.ListDeployments)
+		auth.POST("/pods/:name/deployments", h.CreateDeployment)
+		auth.PUT("/pods/:name/deployments/:deploy", h.UpdateDeployment)
+		auth.DELETE("/pods/:name/deployments/:deploy", h.DeleteDeployment)
+		auth.POST("/pods/:name/deployments/:deploy/start", h.StartDeployment)
+		auth.POST("/pods/:name/deployments/:deploy/stop", h.StopDeployment)
+		auth.POST("/pods/:name/deployments/:deploy/restart", h.RestartDeployment)
 
 		// 监控与事件
 		auth.GET("/pods/:name/metrics", h.Metrics)

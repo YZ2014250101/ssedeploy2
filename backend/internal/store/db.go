@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS pod_metas (
 CREATE TABLE IF NOT EXISTS deployments (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   namespace     TEXT NOT NULL,
+  pod_name      TEXT NOT NULL DEFAULT '',
   name          TEXT NOT NULL,
   owner_id      INTEGER NOT NULL,
   source        TEXT NOT NULL DEFAULT 'repo',
@@ -125,6 +126,8 @@ func New(cfg *config.Config) (*Store, error) {
 	// 历史库补列：deployments.webhook_secret 用于 push 自动部署的回调校验
 	// 重复执行会返回 duplicate column 错误，这里忽略即可
 	_, _ = db.Exec(`ALTER TABLE deployments ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`)
+	// 历史库补列：pod_name 记录部署所属的 Pod（部署脚本在 Pod 工作区内执行）
+	_, _ = db.Exec(`ALTER TABLE deployments ADD COLUMN pod_name TEXT NOT NULL DEFAULT ''`)
 
 	// GORM 复用上面的连接池；TranslateError 让唯一索引冲突统一返回 ErrDuplicatedKey；
 	// 日志交给业务层打印，这里静默避免唯一索引冲突时输出大段红色错误。

@@ -65,30 +65,32 @@ func DeployTypeText(t string) string {
 // Deploy 部署实例，对应 deployments 表。
 // Token 属于敏感信息，仅入库不回传前端（json:"-"）。
 type Deploy struct {
-	ID           int64  `json:"id"`
-	Namespace    string `json:"namespace"`
-	Name         string `json:"name"`
-	OwnerID      int64  `json:"ownerId"`
-	Source       string `json:"source"`       // repo / local
-	RepoURL      string `json:"repoUrl"`      // Git 仓库地址
-	Branch       string `json:"branch"`       // 构建分支
-	SubDir       string `json:"subDir"`       // 子目录，根目录为空
-	Type         string `json:"type"`         // service / job
-	ScheduleType string `json:"scheduleType"` // inference：推理服务，走推理资源池
-	GPU          string `json:"gpu"`          // 绑卡 GPU 标识，空表示不绑定
-	Token        string `json:"-"`            // 私有库访问令牌
-	HealthPath   string `json:"healthPath"`   // 健康检查路径，空表示跳过探测
-	TimeoutSec   int    `json:"timeoutSec"`   // 健康检查超时（秒）
-	AutoDeploy   bool   `json:"autoDeploy"`   // 推送自动部署开关
-	WebhookSecret string `json:"-"`           // Webhook 回调密钥，仅入库
-	Status       string `json:"status"`
-	Message      string `json:"message"` // 状态补充说明（失败原因等）
-	CreatedAt    int64  `json:"createdAt"`
-	UpdatedAt    int64  `json:"updatedAt"`
+	ID            int64  `json:"id"`
+	Namespace     string `json:"namespace"`
+	PodName       string `json:"podName"` // 部署所属的 Pod（部署脚本在该 Pod 内执行）
+	Name          string `json:"name"`
+	OwnerID       int64  `json:"ownerId"`
+	Source        string `json:"source"`       // repo / local
+	RepoURL       string `json:"repoUrl"`      // Git 仓库地址
+	Branch        string `json:"branch"`       // 构建分支
+	SubDir        string `json:"subDir"`       // 子目录，根目录为空
+	Type          string `json:"type"`         // service / job
+	ScheduleType  string `json:"scheduleType"` // inference：推理服务，走推理资源池
+	GPU           string `json:"gpu"`          // 绑卡 GPU 标识，空表示不绑定
+	Token         string `json:"-"`            // 私有库访问令牌
+	HealthPath    string `json:"healthPath"`   // 健康检查路径，空表示跳过探测
+	TimeoutSec    int    `json:"timeoutSec"`   // 健康检查超时（秒）
+	AutoDeploy    bool   `json:"autoDeploy"`   // 推送自动部署开关
+	WebhookSecret string `json:"-"`            // Webhook 回调密钥，仅入库
+	Status        string `json:"status"`
+	Message       string `json:"message"` // 状态补充说明（失败原因等）
+	CreatedAt     int64  `json:"createdAt"`
+	UpdatedAt     int64  `json:"updatedAt"`
 }
 
 // DeployView 部署列表 / 卡片展示数据。
 type DeployView struct {
+	PodName      string `json:"podName"`
 	Name         string `json:"name"`
 	Status       string `json:"status"`
 	StatusText   string `json:"statusText"`
@@ -105,8 +107,8 @@ type DeployView struct {
 	HealthPath   string `json:"healthPath"`
 	TimeoutSec   int    `json:"timeoutSec"`
 	AutoDeploy   bool   `json:"autoDeploy"`
-	WebhookPath  string `json:"webhookPath"`   // Webhook 回调路径（不含域名与密钥）
-	WebhookToken string `json:"webhookToken"`  // 回调密钥，仅负责人 / 管理员可见
+	WebhookPath  string `json:"webhookPath"`  // Webhook 回调路径（不含域名与密钥）
+	WebhookToken string `json:"webhookToken"` // 回调密钥，仅负责人 / 管理员可见
 	Owner        string `json:"owner"`
 	MyRole       string `json:"myRole"`
 	CreatedAt    int64  `json:"createdAt"`

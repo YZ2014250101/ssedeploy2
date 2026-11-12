@@ -27,7 +27,8 @@ func (h *Handler) DeploymentWebhook(c *gin.Context) {
 	}
 
 	triggered, err := h.DeploySvc.HandleWebhook(
-		c.Request.Context(), c.Param("name"), token, c.GetHeader("X-Hub-Signature-256"), body,
+		c.Request.Context(), c.Param("name"), c.Param("deploy"),
+		token, c.GetHeader("X-Hub-Signature-256"), body,
 	)
 	if err != nil {
 		respondErr(c, err)
@@ -37,12 +38,17 @@ func (h *Handler) DeploymentWebhook(c *gin.Context) {
 		OK(c, gin.H{"triggered": false, "message": "已忽略：推送分支与部署分支不一致"})
 		return
 	}
-	OK(c, gin.H{"triggered": true, "message": "已触发重新部署"})
+	OK(c, gin.H{"triggered": true, "message": "已在 Pod 内触发重新部署"})
 }
 
-// ListDeployments 返回部署实例列表：管理员可见全部，普通用户仅本人创建。
+// ListDeployments 返回某个 Pod 下的部署实例列表。
 func (h *Handler) ListDeployments(c *gin.Context) {
-	items, err := h.DeploySvc.List(c.Request.Context(), currentUserID(c), currentIsAdmin(c))
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
+	items, err := h.DeploySvc.List(c.Request.Context(), podName, currentUserID(c), currentIsAdmin(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -50,14 +56,19 @@ func (h *Handler) ListDeployments(c *gin.Context) {
 	OK(c, gin.H{"items": items, "total": len(items)})
 }
 
-// CreateDeployment 创建部署实例：记录配置并在集群中拉起工作负载。
+// CreateDeployment 在指定 Pod 内创建部署：拉取代码到工作区并执行 deploy.sh。
 func (h *Handler) CreateDeployment(c *gin.Context) {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
 	var req model.CreateDeployRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		Fail(c, http.StatusBadRequest, "请求参数格式错误")
 		return
 	}
-	item, err := h.DeploySvc.Create(c.Request.Context(), req, currentUserID(c))
+	item, err := h.DeploySvc.Create(c.Request.Context(), podName, req, currentUserID(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -65,50 +76,75 @@ func (h *Handler) CreateDeployment(c *gin.Context) {
 	OK(c, gin.H{"name": item.Name})
 }
 
-// UpdateDeployment 编辑部署配置，工作负载按新配置重建。
+// UpdateDeployment 编辑部署配置，运行中的实例会重新执行部署脚本。
 func (h *Handler) UpdateDeployment(c *gin.Context) {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
 	var req model.UpdateDeployRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		Fail(c, http.StatusBadRequest, "请求参数格式错误")
 		return
 	}
-	if err := h.DeploySvc.Update(c.Request.Context(), c.Param("name"), req, currentUserID(c), currentIsAdmin(c)); err != nil {
+	if err := h.DeploySvc.Update(c.Request.Context(), podName, c.Param("deploy"), req, currentUserID(c), currentIsAdmin(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
 	OK(c, nil)
 }
 
-// DeleteDeployment 删除部署实例及其工作负载。
+// DeleteDeployment 删除部署实例，并清理 Pod 内的代码与状态目录。
 func (h *Handler) DeleteDeployment(c *gin.Context) {
-	if err := h.DeploySvc.Delete(c.Request.Context(), c.Param("name"), currentUserID(c), currentIsAdmin(c)); err != nil {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
+	if err := h.DeploySvc.Delete(c.Request.Context(), podName, c.Param("deploy"), currentUserID(c), currentIsAdmin(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
 	OK(c, nil)
 }
 
-// StartDeployment 启动部署实例。
+// StartDeployment 在 Pod 内启动部署脚本。
 func (h *Handler) StartDeployment(c *gin.Context) {
-	if err := h.DeploySvc.Start(c.Request.Context(), c.Param("name"), currentUserID(c), currentIsAdmin(c)); err != nil {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
+	if err := h.DeploySvc.Start(c.Request.Context(), podName, c.Param("deploy"), currentUserID(c), currentIsAdmin(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
 	OK(c, nil)
 }
 
-// StopDeployment 停止部署实例。
+// StopDeployment 停止 Pod 内的部署进程。
 func (h *Handler) StopDeployment(c *gin.Context) {
-	if err := h.DeploySvc.Stop(c.Request.Context(), c.Param("name"), currentUserID(c), currentIsAdmin(c)); err != nil {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
+	if err := h.DeploySvc.Stop(c.Request.Context(), podName, c.Param("deploy"), currentUserID(c), currentIsAdmin(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
 	OK(c, nil)
 }
 
-// RestartDeployment 重启部署实例。
+// RestartDeployment 重新拉取代码并执行部署脚本。
 func (h *Handler) RestartDeployment(c *gin.Context) {
-	if err := h.DeploySvc.Restart(c.Request.Context(), c.Param("name"), currentUserID(c), currentIsAdmin(c)); err != nil {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
+	if err := h.DeploySvc.Restart(c.Request.Context(), podName, c.Param("deploy"), currentUserID(c), currentIsAdmin(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
