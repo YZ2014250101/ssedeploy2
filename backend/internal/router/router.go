@@ -45,6 +45,10 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 	api.POST("/register", h.Register) // 注册
 	api.POST("/auth/login", h.Login)  // 兼容旧路径，逻辑与 /login 完全一致
 
+	// 部署 Webhook 回调：由 Git 平台（Gitee / GitHub）直接调用，不经过登录态，
+	// 依靠部署实例的独立 token 或 X-Hub-Signature-256 签名校验。
+	api.POST("/deployments/:name/webhook", h.DeploymentWebhook)
+
 	auth := api.Group("")
 	auth.Use(middleware.Auth(cfg.JWTSecret))
 	// 角色以数据库为准，供接口做资源级权限判断（管理员 / 普通用户）
@@ -88,6 +92,15 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.POST("/pods/:name/start", h.StartPod)
 		auth.POST("/pods/:name/stop", h.StopPod)
 		auth.POST("/pods/:name/restart", h.RestartPod)
+
+		// 部署实例（Git 仓库 -> 构建 -> 工作负载）
+		auth.GET("/deployments", h.ListDeployments)
+		auth.POST("/deployments", h.CreateDeployment)
+		auth.PUT("/deployments/:name", h.UpdateDeployment)
+		auth.DELETE("/deployments/:name", h.DeleteDeployment)
+		auth.POST("/deployments/:name/start", h.StartDeployment)
+		auth.POST("/deployments/:name/stop", h.StopDeployment)
+		auth.POST("/deployments/:name/restart", h.RestartDeployment)
 
 		// 监控与事件
 		auth.GET("/pods/:name/metrics", h.Metrics)

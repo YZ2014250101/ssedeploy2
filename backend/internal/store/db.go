@@ -64,6 +64,30 @@ CREATE TABLE IF NOT EXISTS pod_metas (
   UNIQUE(namespace, name)
 );
 
+CREATE TABLE IF NOT EXISTS deployments (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace     TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  owner_id      INTEGER NOT NULL,
+  source        TEXT NOT NULL DEFAULT 'repo',
+  repo_url      TEXT NOT NULL DEFAULT '',
+  branch        TEXT NOT NULL DEFAULT 'main',
+  sub_dir       TEXT NOT NULL DEFAULT '',
+  type          TEXT NOT NULL DEFAULT 'service',
+  schedule_type TEXT NOT NULL DEFAULT 'inference',
+  gpu           TEXT NOT NULL DEFAULT '',
+  token         TEXT NOT NULL DEFAULT '',
+  health_path   TEXT NOT NULL DEFAULT '',
+  timeout_sec   INTEGER NOT NULL DEFAULT 5,
+  auto_deploy   INTEGER NOT NULL DEFAULT 0,
+  webhook_secret TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'pending',
+  message       TEXT NOT NULL DEFAULT '',
+  created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(namespace, name)
+);
+
 CREATE TABLE IF NOT EXISTS metric_samples (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   namespace TEXT NOT NULL,
@@ -97,6 +121,10 @@ func New(cfg *config.Config) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("初始化表结构失败: %w", err)
 	}
+
+	// 历史库补列：deployments.webhook_secret 用于 push 自动部署的回调校验
+	// 重复执行会返回 duplicate column 错误，这里忽略即可
+	_, _ = db.Exec(`ALTER TABLE deployments ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`)
 
 	// GORM 复用上面的连接池；TranslateError 让唯一索引冲突统一返回 ErrDuplicatedKey；
 	// 日志交给业务层打印，这里静默避免唯一索引冲突时输出大段红色错误。

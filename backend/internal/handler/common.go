@@ -19,6 +19,7 @@ import (
 // Handler 汇总所有接口依赖。
 type Handler struct {
 	Pods        *k8s.PodService
+	DeploySvc   *k8s.DeployService
 	OverviewSvc *k8s.OverviewService
 	HostSvc     *k8s.HostService
 	GPUSvc      *k8s.GPUService
@@ -31,8 +32,8 @@ type Handler struct {
 }
 
 // New 创建接口处理器。
-func New(pods *k8s.PodService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, sharedSvc *shared.Service, st *store.Store, cfg *config.Config) *Handler {
-	return &Handler{Pods: pods, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, AuthSvc: service.NewAuthService(st), Store: st, Cfg: cfg}
+func New(pods *k8s.PodService, deploys *k8s.DeployService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, sharedSvc *shared.Service, st *store.Store, cfg *config.Config) *Handler {
+	return &Handler{Pods: pods, DeploySvc: deploys, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, AuthSvc: service.NewAuthService(st), Store: st, Cfg: cfg}
 }
 
 // OK 统一成功响应：{code:0, message:"ok", data:...}
@@ -72,11 +73,17 @@ func respondErr(c *gin.Context, err error) {
 		Fail(c, http.StatusNotFound, "资源不存在")
 	case errors.Is(err, k8s.ErrPodForbidden):
 		Fail(c, http.StatusForbidden, "无权访问该 Pod")
+	case errors.Is(err, k8s.ErrWebhookForbidden):
+		Fail(c, http.StatusForbidden, err.Error())
+	case errors.Is(err, k8s.ErrWebhookDisabled):
+		Fail(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, k8s.ErrOutsideWorkspace):
 		// 越界访问工作区：统一返回 403 + 明确提示，前端弹窗展示
 		Fail(c, http.StatusForbidden, k8s.ErrOutsideWorkspace.Error())
 	case errors.Is(err, k8s.ErrEntryExists):
 		Fail(c, http.StatusConflict, err.Error())
+	case errors.Is(err, store.ErrDuplicate):
+		Fail(c, http.StatusConflict, "资源已存在，请更换名称")
 	case errors.Is(err, k8s.ErrInvalidName):
 		Fail(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, k8s.ErrNotRegularFile):

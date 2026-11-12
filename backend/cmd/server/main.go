@@ -30,6 +30,7 @@ func main() {
 		log.Fatalf("初始化 Kubernetes 客户端失败: %v", err)
 	}
 	podService := k8s.NewPodService(client, st)
+	deployService := k8s.NewDeployService(client, st)
 	overviewService := k8s.NewOverviewService(client)
 	hostService := k8s.NewHostService(client)
 	gpuService := k8s.NewGPUService(client)
@@ -65,7 +66,7 @@ func main() {
 	clusterService.Start(ctx)
 
 	// 4. 启动 HTTP 服务
-	h := handler.New(podService, overviewService, hostService, gpuService, clusterService, storageService, sharedService, st, cfg)
+	h := handler.New(podService, deployService, overviewService, hostService, gpuService, clusterService, storageService, sharedService, st, cfg)
 	r := router.New(cfg, h)
 	log.Printf("SSEDeploy 已启动：%s（命名空间 %s）", cfg.HTTPAddr, cfg.Namespace)
 	if err := r.Run(cfg.HTTPAddr); err != nil {
