@@ -53,7 +53,8 @@ func Load() *Config {
 		Kubeconfig:      getEnv("SSD_KUBECONFIG", ""),
 		Namespace:       getEnv("SSD_K8S_NAMESPACE", "ssedeploy"),
 		StorageClass:    getEnv("SSD_STORAGE_CLASS", ""),
-		SharedDir:       getEnv("SSD_SHARED_DIR", "/shared"),
+		// 容器内由 compose 显式指定 /shared；本地 go run 用相对目录，避免在磁盘根目录建 /shared
+		SharedDir:       getEnv("SSD_SHARED_DIR", "./shared"),
 		MetricsInterval: getEnvDuration("SSD_METRICS_INTERVAL", 15*time.Second),
 		DefaultAdmin:    getEnv("SSD_ADMIN_USER", "admin"),
 		DefaultPassword: getEnv("SSD_ADMIN_PASSWORD", "admin123"),

@@ -38,3 +38,11 @@ Thumbs.db
 *.db
 *.db-wal
 *.db-shm
+
+# 本地调试用的 kubeconfig（含集群管理员凭证，切勿提交）
+kubeconfig
+kubeconfig.*
+
+# 本地 go run 产生的运行时目录
+backend/data/
+backend/shared/

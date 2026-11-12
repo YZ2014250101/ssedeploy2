@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,16 +28,40 @@ type Client struct {
 	StorageClass string // PVC StorageClass，空表示使用集群默认
 }
 
-// defaultKubeconfigPath 返回默认 kubeconfig 路径（遵循 KUBECONFIG 环境变量）。
-func defaultKubeconfigPath() string {
-	if v := os.Getenv("KUBECONFIG"); v != "" {
-		return v
+// kubeconfigCandidates 按优先级返回候选 kubeconfig 路径：
+// 1. SSD_KUBECONFIG；2. KUBECONFIG（支持多路径）；3. ~/.kube/config；
+// 4. 当前目录 / 上级目录（本地 go run 调试时把 kubeconfig 放在仓库根目录即可）。
+func kubeconfigCandidates(cfg *config.Config) []string {
+	var paths []string
+	if cfg.Kubeconfig != "" {
+		paths = append(paths, cfg.Kubeconfig)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	for _, p := range filepath.SplitList(os.Getenv("KUBECONFIG")) {
+		if p != "" {
+			paths = append(paths, p)
+		}
 	}
-	return filepath.Join(home, ".kube", "config")
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".kube", "config"))
+	}
+	paths = append(paths, "kubeconfig", filepath.Join("..", "kubeconfig"))
+	return paths
+}
+
+// resolveKubeconfig 返回第一个存在且非空的 kubeconfig 路径。
+// 空文件（例如某些工具生成的占位文件）会被跳过，避免 clientcmd 报
+// "invalid configuration: no configuration has been provided"。
+func resolveKubeconfig(cfg *config.Config) (string, []string) {
+	var tried []string
+	for _, p := range kubeconfigCandidates(cfg) {
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() || info.Size() == 0 {
+			tried = append(tried, p)
+			continue
+		}
+		return p, tried
+	}
+	return "", tried
 }
 
 // New 初始化 K8s 客户端：优先使用集群内 ServiceAccount，其次使用 kubeconfig。
@@ -50,9 +75,14 @@ func New(cfg *config.Config) (*Client, error) {
 		// 集群内运行（Pod 中挂载 ServiceAccount）
 		restCfg, err = rest.InClusterConfig()
 	} else {
-		path := cfg.Kubeconfig
+		path, tried := resolveKubeconfig(cfg)
 		if path == "" {
-			path = defaultKubeconfigPath()
+			return nil, fmt.Errorf(
+				"加载 K8s 配置失败: 未找到可用的 kubeconfig（已尝试: %s）\n"+
+					"本地调试请先把内嵌 K3s 的 kubeconfig 导出到仓库根目录:\n"+
+					"  docker cp ssedeploy-k3s:/etc/rancher/k3s/k3s.yaml ./kubeconfig\n"+
+					"或用环境变量指定: SSD_KUBECONFIG=<绝对路径>",
+				strings.Join(tried, ", "))
 		}
 		restCfg, err = clientcmd.BuildConfigFromFlags("", path)
 	}
