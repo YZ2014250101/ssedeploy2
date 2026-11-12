@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,7 +65,8 @@ func containerOf(d *appsv1.Deployment) corev1.Container {
 }
 
 // List 返回平台创建的 Pod 列表，支持关键字与状态过滤。
-func (s *PodService) List(ctx context.Context, keyword, status string, userID int64) ([]model.PodView, error) {
+// 管理员可看到全部 Pod；普通用户只能看到自己创建的 Pod。
+func (s *PodService) List(ctx context.Context, keyword, status string, userID int64, isAdmin bool) ([]model.PodView, error) {
 	deps, err := s.client.Kube.AppsV1().Deployments(s.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: ManagedLabel + "=true",
 	})
@@ -103,6 +105,11 @@ func (s *PodService) List(ctx context.Context, keyword, status string, userID in
 	for i := range deps.Items {
 		dep := &deps.Items[i]
 		meta := metaByName[dep.Name]
+		// 归属过滤：普通用户只能看到自己创建的 Pod
+		ownerID := ownerIDOf(meta, dep)
+		if !isAdmin && ownerID != userID {
+			continue
+		}
 		code := calcStatus(dep, podsByApp[dep.Name])
 
 		view := model.PodView{
@@ -112,7 +119,7 @@ func (s *PodService) List(ctx context.Context, keyword, status string, userID in
 			Spec:          specOf(meta, containerOf(dep)),
 			Image:         imageOf(meta, containerOf(dep)),
 			Owner:         ownerName(meta, users),
-			MyRole:        myRole(meta, userID),
+			MyRole:        myRole(ownerID, userID, isAdmin),
 			Replicas:      replicasOf(dep),
 			ReadyReplicas: dep.Status.ReadyReplicas,
 			CreatedAt:     createdAtOf(meta, dep),
@@ -134,8 +141,8 @@ func (s *PodService) List(ctx context.Context, keyword, status string, userID in
 }
 
 // Stats 汇总列表页顶部的四个统计数字。
-func (s *PodService) Stats(ctx context.Context, userID int64) (map[string]int, error) {
-	views, err := s.List(ctx, "", "", userID)
+func (s *PodService) Stats(ctx context.Context, userID int64, isAdmin bool) (map[string]int, error) {
+	views, err := s.List(ctx, "", "", userID, isAdmin)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +164,8 @@ func (s *PodService) Stats(ctx context.Context, userID int64) (map[string]int, e
 }
 
 // Get 返回详情页数据；Deployment 已被删除时仍返回元数据并标记 NotFound。
-func (s *PodService) Get(ctx context.Context, name string, userID int64) (*model.PodDetail, error) {
+// 普通用户访问他人创建的 Pod 时返回 ErrPodForbidden。
+func (s *PodService) Get(ctx context.Context, name string, userID int64, isAdmin bool) (*model.PodDetail, error) {
 	meta, _ := s.store.GetPodMeta(s.namespace, name)
 	users, _ := s.store.ListUsers()
 
@@ -171,6 +179,9 @@ func (s *PodService) Get(ctx context.Context, name string, userID int64) (*model
 		if meta == nil {
 			return nil, store.ErrNotFound
 		}
+		if !isAdmin && meta.OwnerID != userID {
+			return nil, ErrPodForbidden
+		}
 		return &model.PodDetail{
 			PodView: model.PodView{
 				Name:       meta.Name,
@@ -179,7 +190,7 @@ func (s *PodService) Get(ctx context.Context, name string, userID int64) (*model
 				Spec:       specOf(meta, corev1.Container{}),
 				Image:      meta.Image,
 				Owner:      ownerName(meta, users),
-				MyRole:     myRole(meta, userID),
+				MyRole:     myRole(meta.OwnerID, userID, isAdmin),
 				Replicas:   meta.Replicas,
 				CreatedAt:  meta.CreatedAt,
 			},
@@ -190,6 +201,12 @@ func (s *PodService) Get(ctx context.Context, name string, userID int64) (*model
 			Env:       meta.Env,
 			Command:   meta.Command,
 		}, nil
+	}
+
+	// 归属校验：普通用户只能查看自己创建的 Pod
+	ownerID := ownerIDOf(meta, dep)
+	if !isAdmin && ownerID != userID {
+		return nil, ErrPodForbidden
 	}
 
 	pods, _ := s.podsOf(ctx, name)
@@ -212,7 +229,7 @@ func (s *PodService) Get(ctx context.Context, name string, userID int64) (*model
 			Spec:          specOf(meta, container),
 			Image:         imageOf(meta, container),
 			Owner:         ownerName(meta, users),
-			MyRole:        myRole(meta, userID),
+			MyRole:        myRole(ownerID, userID, isAdmin),
 			Replicas:      replicasOf(dep),
 			ReadyReplicas: dep.Status.ReadyReplicas,
 			CreatedAt:     createdAtOf(meta, dep),
@@ -426,7 +443,12 @@ func (s *PodService) createDeployment(ctx context.Context, req model.CreatePodRe
 }
 
 // Update 修改镜像、规格、环境变量与启动命令；修改镜像/命令会自动触发滚动更新。
-func (s *PodService) Update(ctx context.Context, name string, req model.UpdatePodRequest) error {
+// 普通用户只能修改自己创建的 Pod，管理员可修改全部。
+func (s *PodService) Update(ctx context.Context, name string, req model.UpdatePodRequest, userID int64, isAdmin bool) error {
+	if err := s.EnsureAccess(ctx, name, userID, isAdmin); err != nil {
+		return err
+	}
+
 	cpuQ, err := resource.ParseQuantity(req.CPU)
 	if err != nil {
 		return fmt.Errorf("CPU 规格格式不合法: %s", req.CPU)
@@ -495,7 +517,12 @@ func (s *PodService) Update(ctx context.Context, name string, req model.UpdatePo
 }
 
 // Delete 删除 Pod：Deployment 与 PVC 一起回收。
-func (s *PodService) Delete(ctx context.Context, name string) error {
+// 普通用户只能删除自己创建的 Pod，管理员可删除全部。
+func (s *PodService) Delete(ctx context.Context, name string, userID int64, isAdmin bool) error {
+	if err := s.EnsureAccess(ctx, name, userID, isAdmin); err != nil {
+		return err
+	}
+
 	policy := metav1.DeletePropagationBackground
 	err := s.client.Kube.AppsV1().Deployments(s.namespace).Delete(ctx, name, metav1.DeleteOptions{
 		PropagationPolicy: &policy,
@@ -512,7 +539,12 @@ func (s *PodService) Delete(ctx context.Context, name string) error {
 }
 
 // Scale 调整副本数：1 = 启动，0 = 停止。
-func (s *PodService) Scale(ctx context.Context, name string, replicas int32) error {
+// 普通用户只能操作自己创建的 Pod，管理员可操作全部。
+func (s *PodService) Scale(ctx context.Context, name string, replicas int32, userID int64, isAdmin bool) error {
+	if err := s.EnsureAccess(ctx, name, userID, isAdmin); err != nil {
+		return err
+	}
+
 	dep, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -530,7 +562,12 @@ func (s *PodService) Scale(ctx context.Context, name string, replicas int32) err
 }
 
 // Restart 通过修改模板注解触发滚动重启。
-func (s *PodService) Restart(ctx context.Context, name string) error {
+// 普通用户只能操作自己创建的 Pod，管理员可操作全部。
+func (s *PodService) Restart(ctx context.Context, name string, userID int64, isAdmin bool) error {
+	if err := s.EnsureAccess(ctx, name, userID, isAdmin); err != nil {
+		return err
+	}
+
 	dep, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -684,10 +721,28 @@ func ownerName(meta *model.PodMeta, users map[int64]*model.User) string {
 	return "-"
 }
 
-// myRole 计算当前用户对该 Pod 的角色。
-func myRole(meta *model.PodMeta, userID int64) string {
-	if meta != nil && meta.OwnerID == userID {
+// ownerIDOf 取 Pod 负责人：优先数据库元数据，缺失时回退 Deployment 上的注解。
+func ownerIDOf(meta *model.PodMeta, dep *appsv1.Deployment) int64 {
+	if meta != nil {
+		return meta.OwnerID
+	}
+	if dep == nil {
+		return 0
+	}
+	if raw := dep.Annotations["ssedeploy.io/owner-id"]; raw != "" {
+		id, _ := strconv.ParseInt(raw, 10, 64)
+		return id
+	}
+	return 0
+}
+
+// myRole 计算当前用户对该 Pod 的角色：本人 -> 负责人，管理员 -> 管理员，其余 -> 协作者。
+func myRole(ownerID, userID int64, isAdmin bool) string {
+	if ownerID != 0 && ownerID == userID {
 		return "负责人"
+	}
+	if isAdmin {
+		return "管理员"
 	}
 	return "协作者"
 }

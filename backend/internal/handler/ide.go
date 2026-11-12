@@ -26,7 +26,7 @@ func (h *Handler) IDEPods(c *gin.Context) {
 func (h *Handler) IDEFiles(c *gin.Context) {
 	name := c.Param("name")
 	// 越权校验：只能访问自己创建的 Pod
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -43,7 +43,7 @@ func (h *Handler) IDEFiles(c *gin.Context) {
 // 路由：GET /api/v1/ide/pods/:name/file?root=home|shared&path=main.go
 func (h *Handler) IDEFile(c *gin.Context) {
 	name := c.Param("name")
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -68,7 +68,7 @@ type ideSaveRequest struct {
 // 路由：PUT /api/v1/ide/pods/:name/file
 func (h *Handler) IDEFileSave(c *gin.Context) {
 	name := c.Param("name")
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -101,7 +101,7 @@ type ideCreateRequest struct {
 // 路由：POST /api/v1/ide/pods/:name/files
 func (h *Handler) IDECreateEntry(c *gin.Context) {
 	name := c.Param("name")
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -133,7 +133,7 @@ type ideRenameRequest struct {
 // 路由：PATCH /api/v1/ide/pods/:name/file
 func (h *Handler) IDERenameEntry(c *gin.Context) {
 	name := c.Param("name")
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -158,7 +158,7 @@ func (h *Handler) IDERenameEntry(c *gin.Context) {
 // 路由：DELETE /api/v1/ide/pods/:name/file?root=home|shared&path=xxx
 func (h *Handler) IDEDeleteEntry(c *gin.Context) {
 	name := c.Param("name")
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -179,7 +179,7 @@ func (h *Handler) IDEDeleteEntry(c *gin.Context) {
 // 路由：GET /api/v1/ide/pods/:name/download?root=home|shared&path=main.go
 func (h *Handler) IDEDownload(c *gin.Context) {
 	name := c.Param("name")
-	if err := h.Pods.EnsureOwner(c.Request.Context(), name, currentUserID(c)); err != nil {
+	if err := h.ensurePodAccess(c, name); err != nil {
 		respondErr(c, err)
 		return
 	}

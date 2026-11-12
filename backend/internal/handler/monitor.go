@@ -14,6 +14,10 @@ import (
 // metrics-server 不可用时 available=false，前端展示空态而不是报错。
 func (h *Handler) Metrics(c *gin.Context) {
 	name := c.Param("name")
+	if err := h.ensurePodAccess(c, name); err != nil {
+		respondErr(c, err)
+		return
+	}
 
 	// 默认展示最近 30 分钟，最大 24 小时
 	minutes, _ := strconv.Atoi(c.DefaultQuery("minutes", "30"))
@@ -41,6 +45,11 @@ func (h *Handler) Metrics(c *gin.Context) {
 
 // Events 返回 Pod 最近事件列表。
 func (h *Handler) Events(c *gin.Context) {
+	if err := h.ensurePodAccess(c, c.Param("name")); err != nil {
+		respondErr(c, err)
+		return
+	}
+
 	events, err := h.Pods.Events(c.Request.Context(), c.Param("name"))
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, err.Error())

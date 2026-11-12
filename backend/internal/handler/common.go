@@ -52,6 +52,19 @@ func currentUserID(c *gin.Context) int64 {
 	return id
 }
 
+// currentIsAdmin 判断当前登录用户是否管理员（由 ResolveRole 中间件写入上下文）。
+func currentIsAdmin(c *gin.Context) bool {
+	v, _ := c.Get(middleware.CtxRole)
+	role, _ := v.(string)
+	return role == "admin"
+}
+
+// ensurePodAccess 校验当前用户是否有权访问该 Pod 及其工作区。
+// 管理员可访问全部 Pod，普通用户仅限本人创建的 Pod。
+func (h *Handler) ensurePodAccess(c *gin.Context, name string) error {
+	return h.Pods.EnsureAccess(c.Request.Context(), name, currentUserID(c), currentIsAdmin(c))
+}
+
 // respondErr 把内部错误映射为合适的 HTTP 状态码。
 func respondErr(c *gin.Context, err error) {
 	switch {

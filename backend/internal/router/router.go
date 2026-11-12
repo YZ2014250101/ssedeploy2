@@ -47,6 +47,8 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 
 	auth := api.Group("")
 	auth.Use(middleware.Auth(cfg.JWTSecret))
+	// 角色以数据库为准，供接口做资源级权限判断（管理员 / 普通用户）
+	auth.Use(middleware.ResolveRole(h.Store))
 	{
 		auth.GET("/auth/me", h.Me)
 

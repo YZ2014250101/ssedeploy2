@@ -66,7 +66,11 @@ export function PodTable({ items, loading, busy, onToggle, onRestart, onDelete }
               <span
                 className={cn(
                   "rounded-full px-2 py-0.5 text-xs",
-                  pod.myRole === "负责人" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500",
+                  pod.myRole === "负责人"
+                    ? "bg-blue-50 text-blue-700"
+                    : pod.myRole === "管理员"
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-slate-100 text-slate-500",
                 )}
               >
                 {pod.myRole}

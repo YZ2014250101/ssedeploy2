@@ -43,6 +43,8 @@ export default function PodDetail() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [feature, setFeature] = useState<string | null>(null)
+  // 加载失败原因：403 表示无权访问他人创建的 Pod
+  const [loadError, setLoadError] = useState<{ status?: number; message: string } | null>(null)
 
   const tab = searchParams.get("tab") || "monitor"
 
@@ -52,8 +54,11 @@ export default function PodDetail() {
       try {
         const result = await podApi.get(name)
         setDetail(result)
+        setLoadError(null)
       } catch (error) {
-        toast.error((error as Error).message)
+        const err = error as Error & { status?: number }
+        setLoadError({ status: err.status, message: err.message })
+        if (!silent) toast.error(err.message)
       } finally {
         setLoading(false)
       }
@@ -112,9 +117,17 @@ export default function PodDetail() {
   }
 
   if (!detail) {
+    // 普通用户访问他人创建的 Pod 时后端返回 403
+    const forbidden = loadError?.status === 403
     return (
-      <div className="mx-auto max-w-7xl rounded-xl border border-slate-200 bg-white p-16 text-center text-sm text-slate-500">
-        未找到该 Pod
+      <div className="mx-auto max-w-7xl rounded-xl border border-slate-200 bg-white p-16 text-center">
+        <div className="text-base font-medium text-slate-700">{forbidden ? "无权访问该 Pod" : "未找到该 Pod"}</div>
+        <div className="mt-1 text-sm text-slate-500">
+          {forbidden ? "只有创建者本人或管理员可以查看和管理该 Pod" : "该 Pod 可能已被删除"}
+        </div>
+        <Button variant="outline" className="mt-5" onClick={() => navigate("/pods")}>
+          返回 Pod 列表
+        </Button>
       </div>
     )
   }

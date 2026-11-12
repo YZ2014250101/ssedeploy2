@@ -79,9 +79,13 @@ func (s *PodService) ListOwned(ctx context.Context, userID int64) ([]model.IDEPo
 	return result, nil
 }
 
-// EnsureOwner 校验当前用户是否拥有该 Pod。
-// 终端与日志接口在建立 WebSocket / 读取流之前调用。
-func (s *PodService) EnsureOwner(ctx context.Context, name string, userID int64) error {
+// EnsureAccess 校验当前用户是否有权访问该 Pod 及其工作区（文件 / 终端 / 日志）。
+// 管理员可访问全部 Pod，普通用户仅限本人创建的 Pod。
+func (s *PodService) EnsureAccess(ctx context.Context, name string, userID int64, isAdmin bool) error {
+	if isAdmin {
+		return nil
+	}
+
 	meta, err := s.store.GetPodMeta(s.namespace, name)
 	if err == nil && meta != nil {
 		if meta.OwnerID != userID {
@@ -98,8 +102,7 @@ func (s *PodService) EnsureOwner(ctx context.Context, name string, userID int64)
 		}
 		return err
 	}
-	ownerID, parseErr := strconv.ParseInt(dep.Annotations["ssedeploy.io/owner-id"], 10, 64)
-	if parseErr != nil || ownerID != userID {
+	if ownerIDOf(nil, dep) != userID {
 		return ErrPodForbidden
 	}
 	return nil

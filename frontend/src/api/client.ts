@@ -31,7 +31,10 @@ http.interceptors.response.use(
       }
     }
     const message = error.response?.data?.message || error.message || "网络异常，请稍后重试"
-    return Promise.reject(new Error(message))
+    // 附带 HTTP 状态码，页面可区分「无权限（403）」与「不存在（404）」
+    const wrapped = new Error(message) as Error & { status?: number }
+    wrapped.status = status
+    return Promise.reject(wrapped)
   },
 )
 

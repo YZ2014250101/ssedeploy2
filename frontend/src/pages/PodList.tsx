@@ -18,6 +18,7 @@ import { FeatureDialog } from "@/components/common/FeatureDialog"
 import { PodStatsCards } from "@/components/pod/PodStatsCards"
 import { PodCardGrid, PodTable } from "@/components/pod/PodTable"
 import { CreatePodDialog } from "@/components/pod/CreatePodDialog"
+import { getUser } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 
 const STATUS_OPTIONS = [
@@ -29,6 +30,8 @@ const STATUS_OPTIONS = [
 ]
 
 export default function PodList() {
+  // 管理员可管理全部用户的 Pod，普通用户只能管理自己创建的 Pod（列表由后端按角色过滤）
+  const isAdmin = getUser()?.role === "admin"
   const [items, setItems] = useState<PodView[]>([])
   const [stats, setStats] = useState<PodStats>({ running: 0, stopped: 0, failed: 0, mine: 0 })
   const [loading, setLoading] = useState(true)
@@ -137,7 +140,9 @@ export default function PodList() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Pod</h1>
-          <p className="mt-1 text-sm text-slate-500">以 Pod 为单位管理容器工作负载</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {isAdmin ? "管理员视图：可查看并管理全部用户创建的 Pod" : "仅展示并管理你自己创建的 Pod"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setFeature("AI 助手")}>
