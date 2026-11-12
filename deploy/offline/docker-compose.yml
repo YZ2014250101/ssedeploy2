@@ -57,6 +57,7 @@ services:
     ports:
       # 预置端口，可在 .env 修改；仅用于本机 kubectl 调试，可去掉
       - "${K3S_API_PORT:-6443}:6443"
+      - "30000-30300:30000-30300"
     healthcheck:
       test: ["CMD", "kubectl", "get", "--raw", "/readyz"]
       interval: 10s
