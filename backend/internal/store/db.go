@@ -89,6 +89,24 @@ CREATE TABLE IF NOT EXISTS deployments (
   UNIQUE(namespace, name)
 );
 
+CREATE TABLE IF NOT EXISTS middlewares (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace  TEXT NOT NULL,
+  pod_name   TEXT NOT NULL,
+  owner_id   INTEGER NOT NULL,
+  type       TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  version    TEXT NOT NULL,
+  image      TEXT NOT NULL,
+  storage    TEXT NOT NULL,
+  username   TEXT NOT NULL DEFAULT '',
+  password   TEXT NOT NULL,
+  database   TEXT NOT NULL DEFAULT '',
+  port       INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(namespace, name)
+);
+
 CREATE TABLE IF NOT EXISTS metric_samples (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   namespace TEXT NOT NULL,

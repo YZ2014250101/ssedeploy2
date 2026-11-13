@@ -102,6 +102,11 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.POST("/pods/:name/deployments/:deploy/stop", h.StopDeployment)
 		auth.POST("/pods/:name/deployments/:deploy/restart", h.RestartDeployment)
 
+		// 中间件服务：MySQL / MinIO 一键部署，连接信息归属到指定 Pod
+		auth.GET("/pods/:name/middlewares", h.ListMiddlewares)
+		auth.POST("/pods/:name/middlewares", h.CreateMiddleware)
+		auth.DELETE("/pods/:name/middlewares/:middleware", h.DeleteMiddleware)
+
 		// 监控与事件
 		auth.GET("/pods/:name/metrics", h.Metrics)
 		auth.GET("/pods/:name/events", h.Events)

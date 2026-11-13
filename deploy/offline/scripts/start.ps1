@@ -75,7 +75,9 @@ $CoreImages = @(
   "rancher/mirrored-metrics-server:v0.8.1",     # 资源指标（监控页数据来源）
   "rancher/local-path-provisioner:v0.0.36",     # 默认存储供给，用户 Pod 的 PVC 依赖它
   "rancher/mirrored-library-busybox:1.37.0",    # 系统辅助镜像
-  "ubuntu:22.04"                                # 平台默认 Pod 镜像，预加载后创建 Pod 不再依赖外网
+  "ubuntu:22.04",                               # 平台默认 Pod 镜像，预加载后创建 Pod 不再依赖外网
+  "mysql:8.0",                                  # 中间件一键部署（MySQL 8.0）
+  "minio/minio:RELEASE.2024-06-13T22-53-53Z"    # 中间件一键部署（MinIO S3 对象存储）
 )
 $ImagesDir = Join-Path $Root "images"
 $CoreImagesTar = Join-Path $ImagesDir "k3s-core-images.tar"

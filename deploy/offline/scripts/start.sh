@@ -96,6 +96,9 @@ CORE_IMAGES=(
   "rancher/local-path-provisioner:v0.0.36"
   "rancher/mirrored-library-busybox:1.37.0"
   "ubuntu:22.04"
+  # 中间件一键部署所需镜像：MySQL 与 MinIO
+  "mysql:8.0"
+  "minio/minio:RELEASE.2024-06-13T22-53-53Z"
 )
 CORE_TAR="$ROOT/images/k3s-core-images.tar"
 
