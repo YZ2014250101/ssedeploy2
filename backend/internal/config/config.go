@@ -4,6 +4,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -16,6 +17,8 @@ type Config struct {
 	Kubeconfig      string        // kubeconfig 路径；为空时优先使用集群内配置
 	Namespace       string        // 业务命名空间，平台上所有 Pod 都创建在这里
 	StorageClass    string        // PVC 使用的 StorageClass；为空表示使用集群默认
+	NodePortMin     int32         // 用户 Pod 自动创建 NodePort Service 的端口下限
+	NodePortMax     int32         // 用户 Pod 自动创建 NodePort Service 的端口上限
 	SharedDir       string        // 全局共享目录的本地路径，所有用户/所有 Pod 共用
 	MetricsInterval time.Duration // metrics-server 采样间隔
 	DefaultAdmin    string        // 首次启动时创建的管理员账号
@@ -43,6 +46,19 @@ func getEnvDuration(key string, def time.Duration) time.Duration {
 	return d
 }
 
+// getEnvInt32 读取整数类型的环境变量，解析失败时回退默认值。
+func getEnvInt32(key string, def int32) int32 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return int32(n)
+}
+
 // Load 组装配置：环境变量优先，其次是默认值。
 func Load() *Config {
 	return &Config{
@@ -53,6 +69,9 @@ func Load() *Config {
 		Kubeconfig:      getEnv("SSD_KUBECONFIG", ""),
 		Namespace:       getEnv("SSD_K8S_NAMESPACE", "ssedeploy"),
 		StorageClass:    getEnv("SSD_STORAGE_CLASS", ""),
+		// 默认与离线交付 compose 中 k3s 容器发布的 30000-30300 端口段保持一致
+		NodePortMin: getEnvInt32("SSD_NODEPORT_MIN", 30000),
+		NodePortMax: getEnvInt32("SSD_NODEPORT_MAX", 30300),
 		// 容器内由 compose 显式指定 /shared；本地 go run 用相对目录，避免在磁盘根目录建 /shared
 		SharedDir:       getEnv("SSD_SHARED_DIR", "./shared"),
 		MetricsInterval: getEnvDuration("SSD_METRICS_INTERVAL", 15*time.Second),

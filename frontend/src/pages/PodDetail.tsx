@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom"
-import { ArrowLeft, Code2, Loader2, Play, RotateCw, Sparkles, Square } from "lucide-react"
+import { ArrowLeft, Code2, ExternalLink, Loader2, Play, RotateCw, Sparkles, Square } from "lucide-react"
 import { toast } from "sonner"
 import { podApi, type PodDetail as PodDetailType } from "@/api/pod"
 import { Button } from "@/components/ui/button"
@@ -150,6 +150,18 @@ export default function PodDetail() {
               <span className="font-mono">{detail.spec}</span>
               <span>{detail.image}</span>
               <span>创建于 {formatTime(detail.createdAt)}</span>
+              {detail.nodePort > 0 && (
+                <a
+                  href={`http://${window.location.hostname}:${detail.nodePort}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={`${detail.serviceName}：容器端口 ${detail.servicePort} → 节点端口 ${detail.nodePort}`}
+                  className="inline-flex items-center gap-1 font-medium text-sky-600 hover:text-sky-700 hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  外部访问 :{detail.nodePort}
+                </a>
+              )}
             </div>
           </div>
         </div>

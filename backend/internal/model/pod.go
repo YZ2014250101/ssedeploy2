@@ -70,6 +70,10 @@ type PodDetail struct {
 	Env       []EnvVar `json:"env"`
 	Command   []string `json:"command"`
 	PodName   string   `json:"podName"` // 真实 Pod 名（用于日志/终端）
+	// 外部访问 Service：创建 Pod 时自动生成并分配 NodePort
+	ServiceName string `json:"serviceName"`
+	ServicePort int32  `json:"servicePort"` // Service 暴露的容器端口
+	NodePort    int32  `json:"nodePort"`    // 自动分配的宿主端口
 }
 
 // CreatePodRequest 创建 Pod 的入参。

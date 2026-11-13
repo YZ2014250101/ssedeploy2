@@ -29,7 +29,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化 Kubernetes 客户端失败: %v", err)
 	}
-	podService := k8s.NewPodService(client, st)
+	podService := k8s.NewPodService(client, st, cfg.NodePortMin, cfg.NodePortMax)
 	deployService := k8s.NewDeployService(client, st, podService)
 	overviewService := k8s.NewOverviewService(client)
 	hostService := k8s.NewHostService(client)

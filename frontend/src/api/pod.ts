@@ -24,6 +24,10 @@ export interface PodDetail extends PodView {
   env: EnvVar[]
   command: string[]
   podName: string
+  // 创建 Pod 时自动生成的外部访问 Service
+  serviceName: string
+  servicePort: number
+  nodePort: number
 }
 
 export interface EnvVar {

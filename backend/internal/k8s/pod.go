@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"ssedeploy/internal/model"
 	"ssedeploy/internal/store"
@@ -28,21 +29,42 @@ const (
 	mainContainer = "main"
 	// RestartedAtAnnotation 触发滚动重启的标准注解
 	RestartedAtAnnotation = "kubectl.kubernetes.io/restartedAt"
+	// servicePort 是自动创建的 NodePort Service 暴露的容器端口。
+	// 平台约定用户 Web 服务监听该端口，外部通过自动分配的 NodePort 访问。
+	servicePort int32 = 5173
 )
 
 // nameRe 校验 Pod（Deployment）名称，遵循 K8s DNS-1123 规则
 var nameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
-// PodService 是页面语义上的 "Pod"：一个 Pod 在底层对应一个 Deployment + 一个 PVC。
+// PodService 是页面语义上的 "Pod"：一个 Pod 在底层对应一个 Deployment + 一个 PVC + 一个 NodePort Service。
 type PodService struct {
-	client    *Client
-	store     *store.Store
-	namespace string
+	client      *Client
+	store       *store.Store
+	namespace   string
+	nodePortMin int32
+	nodePortMax int32
 }
 
 // NewPodService 创建 Pod 业务服务。
-func NewPodService(client *Client, st *store.Store) *PodService {
-	return &PodService{client: client, store: st, namespace: client.Namespace}
+// nodePortMin/nodePortMax 是自动创建的 NodePort Service 的端口分配范围。
+func NewPodService(client *Client, st *store.Store, nodePortMin, nodePortMax int32) *PodService {
+	if nodePortMin <= 0 {
+		nodePortMin = 30000
+	}
+	if nodePortMax <= 0 {
+		nodePortMax = 30300
+	}
+	if nodePortMax < nodePortMin {
+		nodePortMax = nodePortMin
+	}
+	return &PodService{
+		client:      client,
+		store:       st,
+		namespace:   client.Namespace,
+		nodePortMin: nodePortMin,
+		nodePortMax: nodePortMax,
+	}
 }
 
 // Namespace 返回业务命名空间。
@@ -50,6 +72,9 @@ func (s *PodService) Namespace() string { return s.namespace }
 
 // pvcName 返回 Pod 数据盘 PVC 名称。
 func pvcName(name string) string { return name + "-data" }
+
+// serviceName 返回 Pod 自动创建的外部访问 Service 名称。
+func serviceName(name string) string { return name + "-web" }
 
 // containerOf 从 Deployment 中取出主容器，取不到时回退到第一个容器。
 func containerOf(d *appsv1.Deployment) corev1.Container {
@@ -246,6 +271,17 @@ func (s *PodService) Get(ctx context.Context, name string, userID int64, isAdmin
 		detail.Env = meta.Env
 		detail.Command = meta.Command
 	}
+	// 外部访问 Service：优先使用自动创建的 <name>-web，兼容手工创建的 Service
+	if svc, err := s.findService(ctx, name); err == nil && svc != nil {
+		detail.ServiceName = svc.Name
+		for _, port := range svc.Spec.Ports {
+			if port.NodePort != 0 {
+				detail.NodePort = port.NodePort
+				detail.ServicePort = port.Port
+				break
+			}
+		}
+	}
 	return detail, nil
 }
 
@@ -285,6 +321,18 @@ func (s *PodService) Create(ctx context.Context, req model.CreatePodRequest, own
 
 	if err := s.createDeployment(ctx, req, ownerID); err != nil {
 		// 创建失败时回收 PVC，避免留下孤立存储
+		_ = s.client.Kube.CoreV1().PersistentVolumeClaims(s.namespace).
+			Delete(context.Background(), pvcName(req.Name), metav1.DeleteOptions{})
+		return err
+	}
+
+	// 自动创建 NodePort Service，让 Pod 内的 Web 服务可被外部访问
+	if err := s.createService(ctx, req.Name, ownerID); err != nil {
+		// Service 创建失败时回滚 Deployment 与 PVC，保证 Pod 创建是原子的
+		policy := metav1.DeletePropagationBackground
+		_ = s.client.Kube.AppsV1().Deployments(s.namespace).Delete(context.Background(), req.Name, metav1.DeleteOptions{
+			PropagationPolicy: &policy,
+		})
 		_ = s.client.Kube.CoreV1().PersistentVolumeClaims(s.namespace).
 			Delete(context.Background(), pvcName(req.Name), metav1.DeleteOptions{})
 		return err
@@ -535,7 +583,114 @@ func (s *PodService) Delete(ctx context.Context, name string, userID int64, isAd
 	_ = s.client.Kube.CoreV1().PersistentVolumeClaims(s.namespace).
 		Delete(ctx, pvcName(name), metav1.DeleteOptions{})
 
+	// 一并回收自动创建的外部访问 Service，避免端口长期被占用
+	_ = s.client.Kube.CoreV1().Services(s.namespace).
+		Delete(ctx, serviceName(name), metav1.DeleteOptions{})
+
 	return s.store.DeletePodMeta(s.namespace, name)
+}
+
+// createService 为 Pod 自动创建 NodePort Service，自动分配一个未被占用的端口。
+// Service 选择器为 app=<Pod 名称>，暴露约定的容器端口 servicePort。
+func (s *PodService) createService(ctx context.Context, name string, ownerID int64) error {
+	svcName := serviceName(name)
+	if _, err := s.client.Kube.CoreV1().Services(s.namespace).Get(ctx, svcName, metav1.GetOptions{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		port, err := s.allocateNodePort(ctx)
+		if err != nil {
+			return err
+		}
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      svcName,
+				Namespace: s.namespace,
+				Labels: map[string]string{
+					appLabel:     name,
+					ManagedLabel: "true",
+				},
+				Annotations: map[string]string{
+					"ssedeploy.io/owner": strconv.FormatInt(ownerID, 10),
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Type:     corev1.ServiceTypeNodePort,
+				Selector: map[string]string{appLabel: name},
+				Ports: []corev1.ServicePort{{
+					Name:       "web",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       servicePort,
+					TargetPort: intstr.FromInt32(servicePort),
+					NodePort:   port,
+				}},
+			},
+		}
+		if _, err := s.client.Kube.CoreV1().Services(s.namespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				return nil
+			}
+			lastErr = err
+			// 并发创建时端口可能被抢占，重新分配后重试
+			if apierrors.IsConflict(err) || strings.Contains(err.Error(), "already allocated") {
+				continue
+			}
+			break
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有可用的 NodePort")
+	}
+	return fmt.Errorf("创建外部访问 Service 失败: %w", lastErr)
+}
+
+// allocateNodePort 在配置范围内挑选一个未被任何 Service 占用的 NodePort。
+func (s *PodService) allocateNodePort(ctx context.Context) (int32, error) {
+	list, err := s.client.Kube.CoreV1().Services(s.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("读取 Service 列表失败: %w", err)
+	}
+	used := make(map[int32]bool, len(list.Items)*2)
+	for _, svc := range list.Items {
+		for _, port := range svc.Spec.Ports {
+			if port.NodePort > 0 {
+				used[port.NodePort] = true
+			}
+		}
+	}
+	for port := s.nodePortMin; port <= s.nodePortMax; port++ {
+		if !used[port] {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("NodePort 已耗尽（%d-%d），请删除闲置 Pod 后重试", s.nodePortMin, s.nodePortMax)
+}
+
+// findService 查找 Pod 对应的外部访问 Service：
+// 优先返回平台自动创建的 <name>-web，兼容用户手工创建的同选择器 Service。
+func (s *PodService) findService(ctx context.Context, name string) (*corev1.Service, error) {
+	svc, err := s.client.Kube.CoreV1().Services(s.namespace).Get(ctx, serviceName(name), metav1.GetOptions{})
+	if err == nil {
+		return svc, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	list, err := s.client.Kube.CoreV1().Services(s.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	for i := range list.Items {
+		if list.Items[i].Spec.Selector[appLabel] == name {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // Scale 调整副本数：1 = 启动，0 = 停止。
