@@ -118,6 +118,12 @@ services:
       # 子域名映射：Ingress host 为 <prefix>.<BASE_DOMAIN>
       SSD_BASE_DOMAIN: "${BASE_DOMAIN:-example.com}"
       SSD_INGRESS_CLASS: "${INGRESS_CLASS:-traefik}"
+      # SSH 凭证：后端内置 SSH 网关，按每个 Pod 的专属端口监听，
+      # 会话通过 K8s exec 转发进 Pod（Pod 内无需 sshd）
+      SSD_SSH_HOST: "${SSH_HOST:-ssedeploy}"
+      SSD_SSH_PORT: "${SSH_PORT:-22057}"
+      SSD_SSH_PORT_MAX: "${SSH_PORT_MAX:-22156}"
+      SSD_SSH_USER: "${SSH_USER:-cloud}"
       # 全局共享目录：与 k3s 容器 /shared 挂载同一个 Docker 卷
       SSD_SHARED_DIR: "/shared"
       # k3s API 地址与 kubeconfig 来源（由 entrypoint 改写后使用）
@@ -132,6 +138,8 @@ services:
       - ./scripts/backend-entrypoint.sh:/scripts/backend-entrypoint.sh:ro
     ports:
       - "${BACKEND_PORT:-8080}:8080"
+      # SSH 网关：每个 Pod 一个专属端口，需与 SSD_SSH_PORT 区间保持一致
+      - "${SSH_PORT:-22057}-${SSH_PORT_MAX:-22156}:${SSH_PORT:-22057}-${SSH_PORT_MAX:-22156}"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 15s

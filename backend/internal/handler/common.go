@@ -97,6 +97,9 @@ func respondErr(c *gin.Context, err error) {
 	case errors.Is(err, k8s.ErrDomainConflict):
 		// 域名已被其他 Ingress 占用
 		Fail(c, http.StatusConflict, err.Error())
+	case errors.Is(err, k8s.ErrSSHUnavailable):
+		// SSH 网关不可达、认证失败或命令执行失败：网关侧问题，返回 502
+		Fail(c, http.StatusBadGateway, err.Error())
 	case errors.Is(err, k8s.ErrNotRegularFile):
 		Fail(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, k8s.ErrFileTooLarge):

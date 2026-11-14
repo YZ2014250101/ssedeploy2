@@ -112,6 +112,10 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.POST("/pods/:name/domains", h.CreateDomain)
 		auth.DELETE("/pods/:name/domains/:prefix", h.DeleteDomain)
 
+		// SSH 凭证：创建 Pod 时自动签发，凭证页展示连接信息并可测试连通性
+		auth.GET("/pods/:name/credentials", h.GetPodCredentials)
+		auth.POST("/pods/:name/credentials/test", h.TestPodSSH)
+
 		// 监控与事件
 		auth.GET("/pods/:name/metrics", h.Metrics)
 		auth.GET("/pods/:name/events", h.Events)

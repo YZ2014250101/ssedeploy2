@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"log"
+	"path/filepath"
 	"time"
 
 	"ssedeploy/internal/config"
@@ -11,6 +12,7 @@ import (
 	"ssedeploy/internal/k8s"
 	"ssedeploy/internal/router"
 	"ssedeploy/internal/shared"
+	"ssedeploy/internal/sshgw"
 	"ssedeploy/internal/store"
 )
 
@@ -29,7 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化 Kubernetes 客户端失败: %v", err)
 	}
-	podService := k8s.NewPodService(client, st, cfg.NodePortMin, cfg.NodePortMax)
+	podService := k8s.NewPodService(client, st, cfg.NodePortMin, cfg.NodePortMax, cfg.SSHHost, cfg.SSHPort, cfg.SSHPortMax, cfg.SSHUser)
 	deployService := k8s.NewDeployService(client, st, podService)
 	middlewareService := k8s.NewMiddlewareService(client, st)
 	ingressService := k8s.NewIngressService(client, cfg.BaseDomain, cfg.IngressClass)
@@ -49,6 +51,18 @@ func main() {
 	// 3. 修复历史 Pod 的工作区挂载（PVC -> /home/workspace），幂等执行
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// 内置 SSH 网关：按每个 Pod 的专属端口监听，
+	// 认证通过后把 SSH 会话通过 K8s exec 转发进 Pod，Pod 内无需 sshd。
+	sshHostKey := filepath.Join(filepath.Dir(cfg.DBPath), "ssh_host_ed25519_key")
+	sshGateway, err := sshgw.New(client, st, sshHostKey)
+	if err != nil {
+		log.Printf("初始化 SSH 网关失败: %v", err)
+	} else {
+		podService.SetSSHPortNotifier(sshGateway)
+		sshGateway.Start(ctx)
+	}
+
 	if repaired, err := podService.RepairWorkspaces(ctx); err != nil {
 		log.Printf("修复历史 Pod 工作区失败: %v", err)
 	} else if repaired > 0 {

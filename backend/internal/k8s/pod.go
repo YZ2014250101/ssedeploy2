@@ -2,7 +2,9 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,6 +39,14 @@ const (
 // nameRe 校验 Pod（Deployment）名称，遵循 K8s DNS-1123 规则
 var nameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// SSHPortNotifier 由 SSH 网关实现：
+// 凭证签发时开启对应端口监听，Pod 删除时释放端口。
+type SSHPortNotifier interface {
+	// EnablePort 尝试监听端口，返回 false 表示该端口在本机不可用
+	EnablePort(port int32) bool
+	DisablePort(port int32)
+}
+
 // PodService 是页面语义上的 "Pod"：一个 Pod 在底层对应一个 Deployment + 一个 PVC + 一个 NodePort Service。
 type PodService struct {
 	client      *Client
@@ -44,11 +54,21 @@ type PodService struct {
 	namespace   string
 	nodePortMin int32
 	nodePortMax int32
+	// SSH 网关信息：当前为云平台提供的占位凭证，可通过环境变量随时替换
+	sshHost     string
+	sshPortBase int32
+	sshPortMax  int32
+	sshUser     string
+	sshNotifier SSHPortNotifier
 }
 
+// SetSSHPortNotifier 注入 SSH 网关：凭证签发后自动在该端口启动 SSH 服务。
+func (s *PodService) SetSSHPortNotifier(n SSHPortNotifier) { s.sshNotifier = n }
+
 // NewPodService 创建 Pod 业务服务。
-// nodePortMin/nodePortMax 是自动创建的 NodePort Service 的端口分配范围。
-func NewPodService(client *Client, st *store.Store, nodePortMin, nodePortMax int32) *PodService {
+// nodePortMin/nodePortMax 是自动创建的 NodePort Service 的端口分配范围；
+// sshHost/sshPortBase/sshPortMax/sshUser 用于为每个 Pod 分配独立的 SSH 端口。
+func NewPodService(client *Client, st *store.Store, nodePortMin, nodePortMax int32, sshHost string, sshPortBase, sshPortMax int32, sshUser string) *PodService {
 	if nodePortMin <= 0 {
 		nodePortMin = 30000
 	}
@@ -58,12 +78,22 @@ func NewPodService(client *Client, st *store.Store, nodePortMin, nodePortMax int
 	if nodePortMax < nodePortMin {
 		nodePortMax = nodePortMin
 	}
+	if sshPortBase <= 0 {
+		sshPortBase = 22057
+	}
+	if sshPortMax < sshPortBase {
+		sshPortMax = sshPortBase + 999
+	}
 	return &PodService{
 		client:      client,
 		store:       st,
 		namespace:   client.Namespace,
 		nodePortMin: nodePortMin,
 		nodePortMax: nodePortMax,
+		sshHost:     sshHost,
+		sshPortBase: sshPortBase,
+		sshPortMax:  sshPortMax,
+		sshUser:     sshUser,
 	}
 }
 
@@ -338,7 +368,7 @@ func (s *PodService) Create(ctx context.Context, req model.CreatePodRequest, own
 		return err
 	}
 
-	return s.store.CreatePodMeta(&model.PodMeta{
+	if err := s.store.CreatePodMeta(&model.PodMeta{
 		Namespace: s.namespace,
 		Name:      req.Name,
 		OwnerID:   ownerID,
@@ -349,7 +379,123 @@ func (s *PodService) Create(ctx context.Context, req model.CreatePodRequest, own
 		Replicas:  req.Replicas,
 		Env:       req.Env,
 		Command:   req.Command,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// 为新建 Pod 签发 SSH 凭证（每个 Pod 一份随机密码）。
+	// 签发失败不阻塞 Pod 创建，首次打开「凭证」页时会自动补发。
+	if _, err := s.EnsureSSHCredential(ctx, req.Name); err != nil {
+		log.Printf("为 Pod %s 生成 SSH 凭证失败: %v", req.Name, err)
+	}
+	return nil
+}
+
+// EnsureSSHCredential 返回 Pod 的 SSH 凭证；数据库中不存在时按配置自动签发并落库。
+// 每个 Pod 都会分配一个不与其他 Pod 冲突的专属端口，凭证创建后端口保持不变。
+func (s *PodService) EnsureSSHCredential(ctx context.Context, name string) (*model.SSHCredential, error) {
+	cred, err := s.store.GetSSHCredential(s.namespace, name)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+
+	// 尚未签发凭证时，先确认 Pod（Deployment）真实存在，避免为任意名称生成凭据
+	if cred == nil {
+		if _, err := s.client.Kube.AppsV1().Deployments(s.namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, store.ErrNotFound
+			}
+			return nil, err
+		}
+	}
+
+	// 分配或复用该 Pod 的专属 SSH 端口
+	port, err := s.allocateSSHPort(name, cred)
+	if err != nil {
+		return nil, err
+	}
+
+	if cred == nil {
+		password, err := generatePassword(24)
+		if err != nil {
+			return nil, fmt.Errorf("生成 SSH 密码失败: %w", err)
+		}
+		cred = &model.SSHCredential{
+			Namespace: s.namespace,
+			PodName:   name,
+			Host:      s.sshHost,
+			Port:      port,
+			Username:  s.sshUser,
+			Password:  password,
+		}
+		if err := s.store.SaveSSHCredential(cred); err != nil {
+			return nil, err
+		}
+		// 回读一次，拿到数据库生成的创建时间
+		saved, err := s.store.GetSSHCredential(s.namespace, name)
+		if err != nil {
+			return nil, err
+		}
+		return s.withSSHEndpoint(saved), nil
+	}
+
+	// 历史凭证可能与其他 Pod 共用同一端口（早期固定端口版本），检测到冲突后重新分配
+	if cred.Port != port {
+		cred.Port = port
+		if err := s.store.SaveSSHCredential(cred); err != nil {
+			return nil, err
+		}
+	}
+	return s.withSSHEndpoint(cred), nil
+}
+
+// allocateSSHPort 为 Pod 选择 SSH 端口：优先复用其已有端口，
+// 否则从起始端口开始取第一个未被其他 Pod 占用、且本机可监听的端口。
+func (s *PodService) allocateSSHPort(podName string, cred *model.SSHCredential) (int32, error) {
+	owners, err := s.store.UsedSSHPorts(s.namespace)
+	if err != nil {
+		return 0, err
+	}
+
+	// 已持有一个只属于自己的端口时保持不变，避免用户本地 SSH 配置失效
+	if cred != nil && cred.Port > 0 {
+		if owner, used := owners[cred.Port]; !used || owner == podName {
+			if s.canListenSSH(cred.Port) {
+				return cred.Port, nil
+			}
+		}
+	}
+
+	for port := s.sshPortBase; port <= s.sshPortMax; port++ {
+		if owner, used := owners[port]; used && owner != podName {
+			continue
+		}
+		// 端口在本机被系统保留或被其他进程占用时跳过，避免凭证指向无法监听的端口
+		if s.canListenSSH(port) {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("SSH 端口已耗尽（%d-%d），请调整 SSD_SSH_PORT / SSD_SSH_PORT_MAX", s.sshPortBase, s.sshPortMax)
+}
+
+// canListenSSH 让 SSH 网关确认端口可用；未注入网关时视为可用。
+func (s *PodService) canListenSSH(port int32) bool {
+	if s.sshNotifier == nil {
+		return true
+	}
+	return s.sshNotifier.EnablePort(port)
+}
+
+// withSSHEndpoint 用当前配置覆盖凭证中的网关地址与用户名，
+// 更换 SSH 网关只需改配置即可对已有 Pod 生效；端口是每 Pod 专属的，保持库中记录不变。
+func (s *PodService) withSSHEndpoint(c *model.SSHCredential) *model.SSHCredential {
+	if s.sshHost != "" {
+		c.Host = s.sshHost
+	}
+	if s.sshUser != "" {
+		c.Username = s.sshUser
+	}
+	return c
 }
 
 // createPVC 为 Pod 创建数据盘。
@@ -418,7 +564,7 @@ func (s *PodService) createDeployment(ctx context.Context, req model.CreatePodRe
 			Namespace: s.namespace,
 			Labels:    labels,
 			Annotations: map[string]string{
-				"ssedeploy.io/owner-id": fmt.Sprintf("%d", ownerID),
+				"ssedeploy.io/owner-id":   fmt.Sprintf("%d", ownerID),
 				"ssedeploy.io/created-by": "ssedeploy",
 			},
 		},
@@ -586,6 +732,12 @@ func (s *PodService) Delete(ctx context.Context, name string, userID int64, isAd
 	// 一并回收自动创建的外部访问 Service，避免端口长期被占用
 	_ = s.client.Kube.CoreV1().Services(s.namespace).
 		Delete(ctx, serviceName(name), metav1.DeleteOptions{})
+
+	// 回收 SSH 凭证与端口监听，避免 Pod 删除后仍可凭旧密码登录
+	if cred, err := s.store.GetSSHCredential(s.namespace, name); err == nil && s.sshNotifier != nil {
+		s.sshNotifier.DisablePort(cred.Port)
+	}
+	_ = s.store.DeleteSSHCredential(s.namespace, name)
 
 	return s.store.DeletePodMeta(s.namespace, name)
 }

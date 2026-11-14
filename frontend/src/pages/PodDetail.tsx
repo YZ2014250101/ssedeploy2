@@ -16,9 +16,10 @@ import { SettingsTab } from "./pod-tabs/SettingsTab"
 import { DeployTab } from "./pod-tabs/DeployTab"
 import { ConnectionTab } from "./pod-tabs/ConnectionTab"
 import { DomainTab } from "./pod-tabs/DomainTab"
+import { CredentialsTab } from "./pod-tabs/CredentialsTab"
 import { formatTime } from "@/lib/format"
 
-// 详情页 13 个 Tab，已实现监控 / 连接 / 终端 / 日志 / 部署 / 子域名 / 设置
+// 详情页 13 个 Tab，已实现监控 / 连接 / 终端 / 日志 / 部署 / 子域名 / 凭证 / 设置
 const TABS = [
   { value: "monitor", label: "监控" },
   { value: "connect", label: "连接" },
@@ -35,7 +36,7 @@ const TABS = [
   { value: "settings", label: "设置" },
 ]
 
-const READY_TABS = new Set(["monitor", "connect", "terminal", "logs", "deploy", "domain", "settings"])
+const READY_TABS = new Set(["monitor", "connect", "terminal", "logs", "deploy", "domain", "credentials", "settings"])
 
 export default function PodDetail() {
   const { name = "" } = useParams()
@@ -226,6 +227,7 @@ export default function PodDetail() {
         {tab === "logs" && <LogsTab name={detail.name} />}
         {tab === "deploy" && <DeployTab podName={detail.name} />}
         {tab === "domain" && <DomainTab podName={detail.name} defaultPort={detail.servicePort} />}
+        {tab === "credentials" && <CredentialsTab podName={detail.name} />}
         {tab === "settings" && (
           <SettingsTab
             key={detail.name}

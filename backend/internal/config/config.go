@@ -25,6 +25,13 @@ type Config struct {
 	MetricsInterval time.Duration // metrics-server 采样间隔
 	DefaultAdmin    string        // 首次启动时创建的管理员账号
 	DefaultPassword string        // 首次启动时创建的管理员密码
+	// SSH 网关信息：为每个 Pod 签发 SSH 凭证时使用，当前为云平台占位地址，
+	// 后续更换网关只需修改环境变量，无需改动代码。
+	SSHHost string
+	SSHPort int32 // 端口分配起始值，每个 Pod 从该值开始分配唯一端口
+	// SSHPortMax 是端口分配上限，耗尽后创建凭证会报错
+	SSHPortMax int32
+	SSHUser    string
 }
 
 // getEnv 读取环境变量，不存在时返回默认值。
@@ -81,5 +88,10 @@ func Load() *Config {
 		MetricsInterval: getEnvDuration("SSD_METRICS_INTERVAL", 15*time.Second),
 		DefaultAdmin:    getEnv("SSD_ADMIN_USER", "admin"),
 		DefaultPassword: getEnv("SSD_ADMIN_PASSWORD", "admin123"),
+		// SSH 凭证占位配置：云平台暂无独立域名，后续可通过环境变量替换
+		SSHHost:    getEnv("SSD_SSH_HOST", "127.0.0.1"),
+		SSHPort:    getEnvInt32("SSD_SSH_PORT", 22057),
+		SSHPortMax: getEnvInt32("SSD_SSH_PORT_MAX", 22156),
+		SSHUser:    getEnv("SSD_SSH_USER", "cloud"),
 	}
 }

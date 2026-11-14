@@ -107,6 +107,18 @@ CREATE TABLE IF NOT EXISTS middlewares (
   UNIQUE(namespace, name)
 );
 
+CREATE TABLE IF NOT EXISTS pod_ssh_credentials (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace  TEXT NOT NULL,
+  pod_name   TEXT NOT NULL,
+  host       TEXT NOT NULL,
+  port       INTEGER NOT NULL,
+  username   TEXT NOT NULL,
+  password   TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(namespace, pod_name)
+);
+
 CREATE TABLE IF NOT EXISTS metric_samples (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   namespace TEXT NOT NULL,
