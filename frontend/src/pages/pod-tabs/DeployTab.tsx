@@ -750,7 +750,7 @@ function DocDialog({ type, onClose }: { type: "tutorial" | "webhook" | null; onC
             <p>1. 点击「创建部署」，来源选择「绑仓库」，填写 Git 仓库地址（支持 Gitee / GitHub）。</p>
             <p>2. 名称留空时自动使用仓库名称；子目录用于代码不在仓库根目录的场景。</p>
             <p>3. 提交后平台不会创建新 Pod，而是进入当前 Pod 拉取代码到 /home/workspace/deployments/&lt;名称&gt;。</p>
-            <p>4. 随后在代码目录（或子目录）依次查找 deploy.sh、deploy/deploy.sh、start.sh 并执行，日志写入 /home/workspace/.ssedeploy/&lt;名称&gt;/deploy.log。</p>
+            <p>4. 随后在代码目录（或子目录）依次查找 deploy.sh、deploy/deploy.sh、start.sh 并执行；运行日志同步写入 /home/workspace/logs/&lt;名称&gt;.log，可在「应用日志」中直接查看（平台内部记录为 .ssedeploy/&lt;名称&gt;/deploy.log）。</p>
             <p>5. 常驻服务的脚本需在前台持续运行：进程存活即「运行中」，脚本退出即「已停止」，非 0 退出码为 fatal。</p>
             <p>6. 仓库为私有时填写访问 Token；容器内没有 git 时，平台会下载公开仓库源码归档后解压到工作区。</p>
             <p>7. 可在 Web 终端或文件树中直接查看 /home/workspace/deployments 下的代码与部署日志。</p>

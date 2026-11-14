@@ -549,6 +549,8 @@ echo none`, shellQuote(deployStateDir(name)))
 func buildRunScript(d *model.Deploy, hasGit bool) string {
 	appDir := deployAppDir(d.Name)
 	stateDir := deployStateDir(d.Name)
+	// 运行日志目录：与应用日志查看器（PodDetail「应用日志」）保持一致
+	logDir := WorkspacePath + "/logs"
 	authRepo := authRepoURL(d.RepoURL, d.Token)
 
 	fetchBlock := ""
@@ -580,20 +582,33 @@ echo "[ssedeploy] 代码已更新到 $APP"
 set -u
 APP=%s
 STATE=%s
+LOGDIR=%s
 LOG="$STATE/deploy.log"
+APP_LOG="$LOGDIR/%s.log"
 EXIT="$STATE/exit"
 PID="$STATE/pid"
 AUTH_REPO=%s
 
-mkdir -p "$STATE" "$APP"
+mkdir -p "$STATE" "$APP" "$LOGDIR"
 rm -f "$EXIT" "$PID"
 echo $$ > "$PID"
 trap 'code=$?; echo "$code" > "$EXIT"; rm -f "$PID"' EXIT
+
+# 运行日志同时出现在工作区 logs/<名称>.log，供 PodDetail「应用日志」查看。
+# 硬链接让平台 deploy.log 与服务日志共享同一份内容，跨文件系统时退化为符号链接。
+: >> "$LOG"
+rm -f "$APP_LOG"
+if ! ln "$LOG" "$APP_LOG" 2>/dev/null; then
+  ln -s "$LOG" "$APP_LOG" 2>/dev/null || true
+fi
 : > "$LOG"
 exec >>"$LOG" 2>&1
 
+echo "[ssedeploy] 运行日志：$APP_LOG"
 export SSD_NAME=%s
 export SSD_POD=%s
+export SSD_LOG_DIR="$LOGDIR"
+export SSD_LOG_FILE="$APP_LOG"
 export SSD_REPO_URL=%s
 export SSD_BRANCH=%s
 export SSD_SUB_DIR=%s
@@ -628,6 +643,8 @@ exit "$code"
 `,
 		shellQuote(appDir),
 		shellQuote(stateDir),
+		shellQuote(logDir),
+		d.Name,
 		shellQuote(authRepo),
 		shellQuote(d.Name),
 		shellQuote(d.PodName),
