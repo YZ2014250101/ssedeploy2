@@ -115,6 +115,9 @@ services:
       SSD_ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123}"
       SSD_JWT_SECRET: "${JWT_SECRET:-ssedeploy-dev-secret-please-change}"
       SSD_METRICS_INTERVAL: "15s"
+      # 子域名映射：Ingress host 为 <prefix>.<BASE_DOMAIN>
+      SSD_BASE_DOMAIN: "${BASE_DOMAIN:-example.com}"
+      SSD_INGRESS_CLASS: "${INGRESS_CLASS:-traefik}"
       # 全局共享目录：与 k3s 容器 /shared 挂载同一个 Docker 卷
       SSD_SHARED_DIR: "/shared"
       # k3s API 地址与 kubeconfig 来源（由 entrypoint 改写后使用）

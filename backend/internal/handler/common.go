@@ -21,6 +21,7 @@ type Handler struct {
 	Pods        *k8s.PodService
 	DeploySvc   *k8s.DeployService
 	Middlewares *k8s.MiddlewareService
+	Domains     *k8s.IngressService
 	OverviewSvc *k8s.OverviewService
 	HostSvc     *k8s.HostService
 	GPUSvc      *k8s.GPUService
@@ -33,8 +34,8 @@ type Handler struct {
 }
 
 // New 创建接口处理器。
-func New(pods *k8s.PodService, deploys *k8s.DeployService, middlewares *k8s.MiddlewareService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, sharedSvc *shared.Service, st *store.Store, cfg *config.Config) *Handler {
-	return &Handler{Pods: pods, DeploySvc: deploys, Middlewares: middlewares, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, AuthSvc: service.NewAuthService(st), Store: st, Cfg: cfg}
+func New(pods *k8s.PodService, deploys *k8s.DeployService, middlewares *k8s.MiddlewareService, domains *k8s.IngressService, overview *k8s.OverviewService, host *k8s.HostService, gpu *k8s.GPUService, cluster *k8s.ClusterService, storage *k8s.StorageService, sharedSvc *shared.Service, st *store.Store, cfg *config.Config) *Handler {
+	return &Handler{Pods: pods, DeploySvc: deploys, Middlewares: middlewares, Domains: domains, OverviewSvc: overview, HostSvc: host, GPUSvc: gpu, ClusterSvc: cluster, StorageSvc: storage, SharedSvc: sharedSvc, AuthSvc: service.NewAuthService(st), Store: st, Cfg: cfg}
 }
 
 // OK 统一成功响应：{code:0, message:"ok", data:...}
@@ -90,6 +91,12 @@ func respondErr(c *gin.Context, err error) {
 	case errors.Is(err, k8s.ErrInvalidMiddleware):
 		// 中间件创建参数不合法（类型、名称、版本、存储大小等）
 		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, k8s.ErrInvalidDomain):
+		// 子域名前缀格式、端口或后端 Service 不合法
+		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, k8s.ErrDomainConflict):
+		// 域名已被其他 Ingress 占用
+		Fail(c, http.StatusConflict, err.Error())
 	case errors.Is(err, k8s.ErrNotRegularFile):
 		Fail(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, k8s.ErrFileTooLarge):

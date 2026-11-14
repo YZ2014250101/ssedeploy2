@@ -3,7 +3,7 @@ import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 
 // 开发环境把 /api 代理到后端；可用 VITE_API_TARGET 覆盖默认地址
-const apiTarget = process.env.VITE_API_TARGET || "http://127.0.0.1:8080"
+const apiTarget = process.env.VITE_API_TARGET || "http://127.0.0.1:8081"
 
 export default defineConfig({
   plugins: [react()],

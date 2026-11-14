@@ -107,6 +107,11 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.POST("/pods/:name/middlewares", h.CreateMiddleware)
 		auth.DELETE("/pods/:name/middlewares/:middleware", h.DeleteMiddleware)
 
+		// 子域名映射：自动创建 Ingress（k3s 内置 Traefik）
+		auth.GET("/pods/:name/domains", h.ListDomains)
+		auth.POST("/pods/:name/domains", h.CreateDomain)
+		auth.DELETE("/pods/:name/domains/:prefix", h.DeleteDomain)
+
 		// 监控与事件
 		auth.GET("/pods/:name/metrics", h.Metrics)
 		auth.GET("/pods/:name/events", h.Events)

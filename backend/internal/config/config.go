@@ -19,6 +19,8 @@ type Config struct {
 	StorageClass    string        // PVC 使用的 StorageClass；为空表示使用集群默认
 	NodePortMin     int32         // 用户 Pod 自动创建 NodePort Service 的端口下限
 	NodePortMax     int32         // 用户 Pod 自动创建 NodePort Service 的端口上限
+	BaseDomain      string        // 子域名主域，例如 example.com，Ingress host 为 <prefix>.example.com
+	IngressClass    string        // Ingress 使用的 IngressClass，k3s 内置 Traefik 为 traefik
 	SharedDir       string        // 全局共享目录的本地路径，所有用户/所有 Pod 共用
 	MetricsInterval time.Duration // metrics-server 采样间隔
 	DefaultAdmin    string        // 首次启动时创建的管理员账号
@@ -62,16 +64,18 @@ func getEnvInt32(key string, def int32) int32 {
 // Load 组装配置：环境变量优先，其次是默认值。
 func Load() *Config {
 	return &Config{
-		HTTPAddr:        getEnv("SSD_HTTP_ADDR", ":8080"),
-		DBPath:          getEnv("SSD_DB_PATH", "./data/ssedeploy.db"),
-		JWTSecret:       getEnv("SSD_JWT_SECRET", "ssedeploy-dev-secret-please-change"),
-		TokenTTL:        getEnvDuration("SSD_TOKEN_TTL", 24*time.Hour),
-		Kubeconfig:      getEnv("SSD_KUBECONFIG", ""),
-		Namespace:       getEnv("SSD_K8S_NAMESPACE", "ssedeploy"),
-		StorageClass:    getEnv("SSD_STORAGE_CLASS", ""),
+		HTTPAddr:     getEnv("SSD_HTTP_ADDR", ":8081"),
+		DBPath:       getEnv("SSD_DB_PATH", "./data/ssedeploy.db"),
+		JWTSecret:    getEnv("SSD_JWT_SECRET", "ssedeploy-dev-secret-please-change"),
+		TokenTTL:     getEnvDuration("SSD_TOKEN_TTL", 24*time.Hour),
+		Kubeconfig:   getEnv("SSD_KUBECONFIG", ""),
+		Namespace:    getEnv("SSD_K8S_NAMESPACE", "ssedeploy"),
+		StorageClass: getEnv("SSD_STORAGE_CLASS", ""),
 		// 默认与离线交付 compose 中 k3s 容器发布的 30000-30300 端口段保持一致
-		NodePortMin: getEnvInt32("SSD_NODEPORT_MIN", 30000),
-		NodePortMax: getEnvInt32("SSD_NODEPORT_MAX", 30300),
+		NodePortMin:  getEnvInt32("SSD_NODEPORT_MIN", 30000),
+		NodePortMax:  getEnvInt32("SSD_NODEPORT_MAX", 30300),
+		BaseDomain:   getEnv("SSD_BASE_DOMAIN", "example.com"),
+		IngressClass: getEnv("SSD_INGRESS_CLASS", "traefik"),
 		// 容器内由 compose 显式指定 /shared；本地 go run 用相对目录，避免在磁盘根目录建 /shared
 		SharedDir:       getEnv("SSD_SHARED_DIR", "./shared"),
 		MetricsInterval: getEnvDuration("SSD_METRICS_INTERVAL", 15*time.Second),
