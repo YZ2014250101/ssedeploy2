@@ -120,6 +120,9 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.GET("/pods/:name/metrics", h.Metrics)
 		auth.GET("/pods/:name/events", h.Events)
 
+		// 用量与计费面板：range 取 24h / 7d / 30d
+		auth.GET("/pods/:name/usage", h.PodUsage)
+
 		// 日志（HTTP 拉取 + WebSocket 实时）
 		auth.GET("/pods/:name/logs", h.Logs)
 		auth.GET("/pods/:name/logs/stream", h.StreamLogs)
