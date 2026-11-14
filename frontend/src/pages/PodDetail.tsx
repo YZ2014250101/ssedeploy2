@@ -12,6 +12,8 @@ import { ComingSoon } from "@/components/pod/ComingSoon"
 import { MonitorTab } from "./pod-tabs/MonitorTab"
 import { TerminalTab } from "./pod-tabs/TerminalTab"
 import { LogsTab } from "./pod-tabs/LogsTab"
+import { AppLogsTab } from "./pod-tabs/AppLogsTab"
+import { FilesTab } from "./pod-tabs/FilesTab"
 import { SettingsTab } from "./pod-tabs/SettingsTab"
 import { DeployTab } from "./pod-tabs/DeployTab"
 import { ConnectionTab } from "./pod-tabs/ConnectionTab"
@@ -37,7 +39,7 @@ const TABS = [
   { value: "settings", label: "设置" },
 ]
 
-const READY_TABS = new Set(["monitor", "connect", "terminal", "logs", "deploy", "domain", "credentials", "usage", "settings"])
+const READY_TABS = new Set(["monitor", "connect", "terminal", "files", "logs", "applogs", "deploy", "domain", "credentials", "usage", "settings"])
 
 export default function PodDetail() {
   const { name = "" } = useParams()
@@ -223,9 +225,11 @@ export default function PodDetail() {
       {/* Tab 内容 */}
       <div>
         {tab === "monitor" && <MonitorTab name={detail.name} />}
-        {tab === "connect" && <ConnectionTab podName={detail.name} />}
+        {tab === "connect" && <ConnectionTab podName={detail.name} disk={detail.disk} />}
         {tab === "terminal" && <TerminalTab name={detail.name} />}
+        {tab === "files" && <FilesTab podName={detail.name} />}
         {tab === "logs" && <LogsTab name={detail.name} />}
+        {tab === "applogs" && <AppLogsTab podName={detail.name} />}
         {tab === "deploy" && <DeployTab podName={detail.name} />}
         {tab === "domain" && <DomainTab podName={detail.name} defaultPort={detail.servicePort} />}
         {tab === "credentials" && <CredentialsTab podName={detail.name} />}

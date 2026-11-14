@@ -26,6 +26,9 @@ const MiddlewareLabel = "ssedeploy.io/middleware"
 // ErrInvalidMiddleware 表示中间件创建参数不合法，接口层映射为 400。
 var ErrInvalidMiddleware = errors.New("中间件参数不合法")
 
+// ErrStorageQuota 表示中间件申请的存储超过所属 Pod 的磁盘配额，接口层映射为 400。
+var ErrStorageQuota = errors.New("存储配额不足")
+
 // versionRe 限制镜像版本号字符，防止把任意字符串拼进镜像地址。
 var versionRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
@@ -205,6 +208,11 @@ func (s *MiddlewareService) Create(ctx context.Context, podName string, ownerID 
 		return nil, err
 	}
 
+	// 中间件数据盘计入所属 Pod 的磁盘配额，禁止累计申请超过创建 Pod 时设置的存储空间
+	if err := s.ensureStorageQuota(podName, diskQ); err != nil {
+		return nil, err
+	}
+
 	password, err := generatePassword(24)
 	if err != nil {
 		return nil, fmt.Errorf("生成随机密码失败: %w", err)
@@ -261,6 +269,47 @@ func (s *MiddlewareService) Create(ctx context.Context, podName string, ownerID 
 // hostOf 返回中间件在集群内的访问域名（Host 属于派生字段，不落库）。
 func (s *MiddlewareService) hostOf(name string) string {
 	return fmt.Sprintf("%s.%s.svc.cluster.local", name, s.namespace)
+}
+
+// ensureStorageQuota 校验本次申请的数据盘是否超出所属 Pod 的磁盘配额。
+// 配额取创建 Pod 时设置的 Disk；历史 Pod 未记录规格时不限制。
+// 已用容量按该 Pod 名下所有中间件的数据盘累加。
+func (s *MiddlewareService) ensureStorageQuota(podName string, request resource.Quantity) error {
+	meta, err := s.store.GetPodMeta(s.namespace, podName)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// 平台外创建的 Pod 没有配额信息，保持兼容不拦截
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(meta.Disk) == "" {
+		return nil
+	}
+	quota, err := resource.ParseQuantity(meta.Disk)
+	if err != nil || quota.Sign() <= 0 {
+		// 历史数据规格异常时不让创建完全不可用
+		return nil
+	}
+
+	items, err := s.store.ListMiddlewares(s.namespace, podName)
+	if err != nil {
+		return err
+	}
+	used := resource.MustParse("0")
+	for _, item := range items {
+		if q, err := resource.ParseQuantity(item.Storage); err == nil && q.Sign() > 0 {
+			used.Add(q)
+		}
+	}
+
+	total := used.DeepCopy()
+	total.Add(request)
+	if total.Cmp(quota) > 0 {
+		return fmt.Errorf("%w：Pod %s 磁盘配额 %s，已用 %s，本次申请 %s",
+			ErrStorageQuota, podName, quota.String(), used.String(), request.String())
+	}
+	return nil
 }
 
 // List 返回某个 Pod 名下的中间件，并实时探测 K8s 中的运行状态。

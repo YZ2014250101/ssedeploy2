@@ -51,6 +51,38 @@ const STATUS_STYLE: Record<
   notfound: { label: "NotFound", variant: "secondary" },
 }
 
+// 存储规格解析：支持 K8s Quantity 的常见后缀（5Gi / 1024Mi / 纯字节）
+const UNIT_BYTES: Record<string, number> = {
+  Ki: 1024,
+  Mi: 1024 ** 2,
+  Gi: 1024 ** 3,
+  Ti: 1024 ** 4,
+  K: 1e3,
+  M: 1e6,
+  G: 1e9,
+  T: 1e12,
+}
+
+function parseStorage(value: string): number | null {
+  const matched = /^([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]*)$/.exec(value.trim())
+  if (!matched) return null
+  const num = Number(matched[1])
+  if (!Number.isFinite(num)) return null
+  const unit = matched[2]
+  if (!unit) return num
+  const factor = UNIT_BYTES[unit]
+  return factor ? num * factor : null
+}
+
+// 字节数格式化为易读规格，用于展示配额 / 已用 / 可用
+function formatStorage(bytes: number): string {
+  if (bytes <= 0) return "0"
+  const gi = 1024 ** 3
+  if (bytes >= gi) return `${Number((bytes / gi).toFixed(2))}Gi`
+  const mi = 1024 ** 2
+  return `${Math.max(1, Math.floor(bytes / mi))}Mi`
+}
+
 interface FormState {
   type: MiddlewareType
   name: string
@@ -72,7 +104,8 @@ function defaultForm(type: MiddlewareType): FormState {
 }
 
 // 连接 Tab：展示当前 Pod 名下的中间件连接信息，并支持一键创建 / 删除
-export function ConnectionTab({ podName }: { podName: string }) {
+// disk 为创建 Pod 时设置的磁盘配额，中间件数据盘累计不能超过该值（与后端校验一致）
+export function ConnectionTab({ podName, disk }: { podName: string; disk?: string }) {
   const [items, setItems] = useState<MiddlewareView[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -86,6 +119,23 @@ export function ConnectionTab({ podName }: { podName: string }) {
 
   // 密码默认打码，点击眼睛图标临时展示
   const [revealed, setRevealed] = useState<Record<number, boolean>>({})
+
+  const meta = TYPE_META[form.type]
+
+  // 存储配额：配额来自 Pod 磁盘规格，已用为当前中间件数据盘累计
+  const quotaBytes = disk ? parseStorage(disk) : null
+  const usedBytes = items.reduce((sum, item) => sum + (parseStorage(item.storage) ?? 0), 0)
+  const remainingBytes = quotaBytes === null ? null : Math.max(0, quotaBytes - usedBytes)
+  // 表单未填时按该类型默认容量估算，与后端缺省逻辑一致
+  const requestedBytes = parseStorage(form.storage.trim() || meta.storage)
+  const storageError = (() => {
+    if (quotaBytes === null) return ""
+    if (requestedBytes === null) return "存储规格格式不正确，例如 5Gi / 1024Mi"
+    if (usedBytes + requestedBytes > quotaBytes) {
+      return `超出可用存储：Pod 配额 ${formatStorage(quotaBytes)}，已用 ${formatStorage(usedBytes)}，可用 ${formatStorage(remainingBytes ?? 0)}`
+    }
+    return ""
+  })()
 
   const load = useCallback(
     async (silent = false) => {
@@ -133,6 +183,10 @@ export function ConnectionTab({ podName }: { podName: string }) {
       toast.error("请填写服务名")
       return
     }
+    if (storageError) {
+      toast.error(storageError)
+      return
+    }
     setSubmitting(true)
     try {
       const payload: CreateMiddlewarePayload = {
@@ -169,7 +223,21 @@ export function ConnectionTab({ podName }: { podName: string }) {
     }
   }
 
-  const meta = TYPE_META[form.type]
+  // 打开创建弹窗：默认容量超过剩余配额时自动收缩，避免一打开就超限
+  function openCreateForm() {
+    const next = defaultForm(form.type)
+    const defaults = parseStorage(next.storage)
+    if (
+      remainingBytes !== null &&
+      remainingBytes > 0 &&
+      defaults !== null &&
+      defaults > remainingBytes
+    ) {
+      next.storage = formatStorage(remainingBytes)
+    }
+    setForm(next)
+    setFormOpen(true)
+  }
 
   return (
     <div className="space-y-4">
@@ -190,7 +258,7 @@ export function ConnectionTab({ podName }: { podName: string }) {
             <RefreshCw className="h-3.5 w-3.5" />
             刷新
           </Button>
-          <Button size="sm" onClick={() => setFormOpen(true)}>
+          <Button size="sm" onClick={openCreateForm}>
             <Plus className="h-3.5 w-3.5" />
             创建中间件
           </Button>
@@ -209,7 +277,7 @@ export function ConnectionTab({ podName }: { podName: string }) {
           <div className="mt-1 text-xs text-slate-400">
             创建 MySQL / MinIO 后，服务名、端口、账号密码会显示在这里
           </div>
-          <Button className="mt-4" size="sm" onClick={() => setFormOpen(true)}>
+          <Button className="mt-4" size="sm" onClick={openCreateForm}>
             <Plus className="h-3.5 w-3.5" />
             创建中间件
           </Button>
@@ -400,6 +468,14 @@ export function ConnectionTab({ podName }: { podName: string }) {
                   onChange={(event) => setForm({ ...form, storage: event.target.value })}
                   placeholder={meta.storage}
                 />
+                {quotaBytes !== null && (
+                  <p
+                    className={`text-xs ${storageError ? "text-red-500" : "text-slate-400"}`}
+                  >
+                    {storageError ||
+                      `Pod 磁盘配额 ${formatStorage(quotaBytes)}，已用 ${formatStorage(usedBytes)}，可用 ${formatStorage(remainingBytes ?? 0)}`}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -419,7 +495,7 @@ export function ConnectionTab({ podName }: { podName: string }) {
             <Button variant="outline" onClick={() => setFormOpen(false)}>
               取消
             </Button>
-            <Button onClick={handleCreate} disabled={submitting}>
+            <Button onClick={handleCreate} disabled={submitting || Boolean(storageError)}>
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
               创建
             </Button>

@@ -91,6 +91,9 @@ func respondErr(c *gin.Context, err error) {
 	case errors.Is(err, k8s.ErrInvalidMiddleware):
 		// 中间件创建参数不合法（类型、名称、版本、存储大小等）
 		Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, k8s.ErrStorageQuota):
+		// 中间件数据盘累计超过所属 Pod 的磁盘配额
+		Fail(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, k8s.ErrInvalidDomain):
 		// 子域名前缀格式、端口或后端 Service 不合法
 		Fail(c, http.StatusBadRequest, err.Error())

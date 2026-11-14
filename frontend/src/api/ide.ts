@@ -24,10 +24,11 @@ export const ideApi = {
   pods: () => request<{ items: IDEPod[] }>({ url: "/ide/pods" }),
 
   // 列举工作区文件：GET /api/v1/ide/pods/:name/files
-  files: (name: string, root: IDERoot) =>
+  // path 为相对目录根的目录路径（空表示根目录）；返回结果包含该目录下的递归条目
+  files: (name: string, root: IDERoot, path = "") =>
     request<{ items: IDEFileEntry[] }>({
       url: `/ide/pods/${encodeURIComponent(name)}/files`,
-      params: { root },
+      params: { root, path },
     }),
 
   // 读取文件内容：GET /api/v1/ide/pods/:name/file

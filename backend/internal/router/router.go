@@ -127,6 +127,10 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		auth.GET("/pods/:name/logs", h.Logs)
 		auth.GET("/pods/:name/logs/stream", h.StreamLogs)
 
+		// 应用日志：读取工作区 logs 目录下的日志文件
+		auth.GET("/pods/:name/app-logs/files", h.AppLogFiles)
+		auth.GET("/pods/:name/app-logs", h.AppLog)
+
 		// WebSSH
 		auth.GET("/pods/:name/terminal", h.Terminal)
 
