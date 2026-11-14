@@ -3,6 +3,9 @@ package router
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -175,7 +178,21 @@ func New(cfg *config.Config, h *handler.Handler) *gin.Engine {
 		cluster.GET("/node/:nodeName/gpu-metrics", h.ClusterGPUMetrics)
 	}
 
+	// 单进程部署：SSD_WEB_DIR 指向前端构建产物时，由后端同时托管页面与接口。
+	// /api 前缀仍返回 JSON 404，其余路径回退到 index.html 以支持 SPA 路由。
+	webDir := ""
+	if cfg.WebDir != "" {
+		if info, err := os.Stat(cfg.WebDir); err == nil && info.IsDir() {
+			webDir = cfg.WebDir
+			r.Static("/assets", filepath.Join(webDir, "assets"))
+		}
+	}
+
 	r.NoRoute(func(c *gin.Context) {
+		if webDir != "" && !strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.File(filepath.Join(webDir, "index.html"))
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "接口不存在", "data": nil})
 	})
 	return r

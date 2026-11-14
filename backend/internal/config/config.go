@@ -22,6 +22,7 @@ type Config struct {
 	BaseDomain      string        // 子域名主域，例如 example.com，Ingress host 为 <prefix>.example.com
 	IngressClass    string        // Ingress 使用的 IngressClass，k3s 内置 Traefik 为 traefik
 	SharedDir       string        // 全局共享目录的本地路径，所有用户/所有 Pod 共用
+	WebDir          string        // 前端静态资源目录；为空时不托管前端（本地开发由 Vite 提供）
 	MetricsInterval time.Duration // metrics-server 采样间隔
 	DefaultAdmin    string        // 首次启动时创建的管理员账号
 	DefaultPassword string        // 首次启动时创建的管理员密码
@@ -84,7 +85,9 @@ func Load() *Config {
 		BaseDomain:   getEnv("SSD_BASE_DOMAIN", "example.com"),
 		IngressClass: getEnv("SSD_INGRESS_CLASS", "traefik"),
 		// 容器内由 compose 显式指定 /shared；本地 go run 用相对目录，避免在磁盘根目录建 /shared
-		SharedDir:       getEnv("SSD_SHARED_DIR", "./shared"),
+		SharedDir: getEnv("SSD_SHARED_DIR", "./shared"),
+		// 单进程部署（如云平台 deploy.sh）时指向 frontend/dist，由后端同时托管页面与接口
+		WebDir:          getEnv("SSD_WEB_DIR", ""),
 		MetricsInterval: getEnvDuration("SSD_METRICS_INTERVAL", 15*time.Second),
 		DefaultAdmin:    getEnv("SSD_ADMIN_USER", "admin"),
 		DefaultPassword: getEnv("SSD_ADMIN_PASSWORD", "admin123"),

@@ -46,3 +46,7 @@ kubeconfig.*
 # 本地 go run 产生的运行时目录
 backend/data/
 backend/shared/
+
+# deploy.sh 产物
+/bin/
+/.tools/
