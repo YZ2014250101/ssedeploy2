@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -56,4 +57,22 @@ func (h *Handler) TestPodSSH(c *gin.Context) {
 		return
 	}
 	OK(c, gin.H{"output": output})
+}
+
+// GetPodSSHEvents 返回该 Pod 最近的 SSH 连接记录。
+// 记录由内置 SSH 网关在认证成功/失败/断开时写入，格式对齐 sshd 日志。
+func (h *Handler) GetPodSSHEvents(c *gin.Context) {
+	podName := c.Param("name")
+	if err := h.ensurePodAccess(c, podName); err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	events, err := h.Store.ListSSHEvents(h.Pods.Namespace(), podName, limit)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	OK(c, gin.H{"items": events})
 }

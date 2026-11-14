@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS pod_ssh_credentials (
   UNIQUE(namespace, pod_name)
 );
 
+CREATE TABLE IF NOT EXISTS pod_ssh_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace   TEXT NOT NULL,
+  pod_name    TEXT NOT NULL,
+  username    TEXT NOT NULL DEFAULT '',
+  remote_addr TEXT NOT NULL DEFAULT '',
+  event       TEXT NOT NULL,
+  message     TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ssh_events_pod ON pod_ssh_events(namespace, pod_name, id);
+
 CREATE TABLE IF NOT EXISTS metric_samples (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   namespace TEXT NOT NULL,

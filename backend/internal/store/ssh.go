@@ -116,3 +116,56 @@ func (s *Store) UsedSSHPorts(namespace string) (map[int32]string, error) {
 	}
 	return owners, rows.Err()
 }
+
+// sshEventLimit 是每个 Pod 保留的连接记录条数上限，避免日志无限增长。
+const sshEventLimit = 500
+
+// SaveSSHEvent 记录一次 SSH 连接事件，并裁剪该 Pod 的历史记录。
+func (s *Store) SaveSSHEvent(e *model.SSHEvent) error {
+	res, err := s.DB.Exec(
+		`INSERT INTO pod_ssh_events(namespace, pod_name, username, remote_addr, event, message)
+		 VALUES(?, ?, ?, ?, ?, ?)`,
+		e.Namespace, e.PodName, e.Username, e.RemoteAddr, e.Event, e.Message,
+	)
+	if err != nil {
+		return fmt.Errorf("保存 SSH 连接记录失败: %w", err)
+	}
+	e.ID, _ = res.LastInsertId()
+	_, _ = s.DB.Exec(
+		`DELETE FROM pod_ssh_events
+		 WHERE namespace = ? AND pod_name = ? AND id NOT IN (
+		   SELECT id FROM pod_ssh_events WHERE namespace = ? AND pod_name = ? ORDER BY id DESC LIMIT ?
+		 )`,
+		e.Namespace, e.PodName, e.Namespace, e.PodName, sshEventLimit,
+	)
+	return nil
+}
+
+// ListSSHEvents 返回某个 Pod 最近的 SSH 连接记录（按时间倒序）。
+func (s *Store) ListSSHEvents(namespace, podName string, limit int) ([]*model.SSHEvent, error) {
+	if limit <= 0 || limit > sshEventLimit {
+		limit = sshEventLimit
+	}
+	rows, err := s.DB.Query(
+		`SELECT id, namespace, pod_name, username, remote_addr, event, message, created_at
+		 FROM pod_ssh_events WHERE namespace = ? AND pod_name = ?
+		 ORDER BY id DESC LIMIT ?`,
+		namespace, podName, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]*model.SSHEvent, 0, limit)
+	for rows.Next() {
+		var e model.SSHEvent
+		if err := rows.Scan(
+			&e.ID, &e.Namespace, &e.PodName, &e.Username, &e.RemoteAddr, &e.Event, &e.Message, &e.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, &e)
+	}
+	return events, rows.Err()
+}

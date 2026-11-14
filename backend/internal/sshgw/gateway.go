@@ -26,6 +26,7 @@ import (
 	executil "k8s.io/client-go/util/exec"
 
 	"ssedeploy/internal/k8s"
+	"ssedeploy/internal/model"
 	"ssedeploy/internal/store"
 )
 
@@ -164,16 +165,41 @@ func (g *Gateway) serve(port int32, ln net.Listener) {
 func (g *Gateway) handleConn(port int32, raw net.Conn) {
 	defer raw.Close()
 
+	remoteHost, remotePort := splitRemoteAddr(raw.RemoteAddr())
+	remoteAddr := raw.RemoteAddr().String()
+
+	// 认证回调与连接结束可能在不同 goroutine 中读写这些状态
+	var (
+		stateMu  sync.Mutex
+		podName  string
+		username string
+		authed   bool
+	)
+
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: func(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
 			cred, err := g.store.GetSSHCredentialByPort(g.namespace, port)
 			if err != nil {
 				return nil, errors.New("凭证不存在")
 			}
+
+			stateMu.Lock()
+			podName = cred.PodName
+			username = meta.User()
+			stateMu.Unlock()
+
 			if meta.User() != cred.Username ||
 				subtle.ConstantTimeCompare(pass, []byte(cred.Password)) != 1 {
+				g.saveEvent(cred.PodName, meta.User(), remoteAddr, model.SSHEventFailed,
+					fmt.Sprintf("Failed password for %s from %s port %s ssh2", meta.User(), remoteHost, remotePort))
 				return nil, errors.New("用户名或密码错误")
 			}
+
+			stateMu.Lock()
+			authed = true
+			stateMu.Unlock()
+			g.saveEvent(cred.PodName, meta.User(), remoteAddr, model.SSHEventAccepted,
+				fmt.Sprintf("Accepted password for %s from %s port %s ssh2", meta.User(), remoteHost, remotePort))
 			return &ssh.Permissions{Extensions: map[string]string{"pod": cred.PodName}}, nil
 		},
 	}
@@ -181,12 +207,34 @@ func (g *Gateway) handleConn(port int32, raw net.Conn) {
 
 	sconn, chans, reqs, err := ssh.NewServerConn(raw, cfg)
 	if err != nil {
+		// 握手阶段失败：记录认证前断开，便于排查暴力破解与误连
+		stateMu.Lock()
+		p, u, ok := podName, username, authed
+		stateMu.Unlock()
+		if p != "" && u != "" && !ok {
+			g.saveEvent(p, u, remoteAddr, model.SSHEventDisconnect,
+				fmt.Sprintf("Disconnected from authenticating user %s %s port %s [preauth]", u, remoteHost, remotePort))
+		}
 		return
 	}
 	defer sconn.Close()
+	// 认证通过后连接关闭时记录断开事件
+	defer func() {
+		stateMu.Lock()
+		p, u := podName, username
+		stateMu.Unlock()
+		if p != "" {
+			g.saveEvent(p, u, remoteAddr, model.SSHEventDisconnect,
+				fmt.Sprintf("Received disconnect from %s port %s:11: Bye Bye", remoteHost, remotePort))
+		}
+	}()
 	go ssh.DiscardRequests(reqs)
 
-	podName := sconn.Permissions.Extensions["pod"]
+	stateMu.Lock()
+	podName = sconn.Permissions.Extensions["pod"]
+	activePod := podName
+	stateMu.Unlock()
+
 	for newCh := range chans {
 		if newCh.ChannelType() != "session" {
 			_ = newCh.Reject(ssh.UnknownChannelType, "仅支持 session 通道")
@@ -196,8 +244,37 @@ func (g *Gateway) handleConn(port int32, raw net.Conn) {
 		if err != nil {
 			continue
 		}
-		go g.handleSession(podName, ch, chReqs)
+		go g.handleSession(activePod, ch, chReqs)
 	}
+}
+
+// saveEvent 持久化一条 SSH 连接记录；失败只记日志，不影响连接本身。
+func (g *Gateway) saveEvent(podName, username, remoteAddr, event, message string) {
+	if podName == "" {
+		return
+	}
+	if err := g.store.SaveSSHEvent(&model.SSHEvent{
+		Namespace:  g.namespace,
+		PodName:    podName,
+		Username:   username,
+		RemoteAddr: remoteAddr,
+		Event:      event,
+		Message:    message,
+	}); err != nil {
+		log.Printf("[ssh-gw] 保存 SSH 连接记录失败: %v", err)
+	}
+}
+
+// splitRemoteAddr 拆分客户端地址，取不到端口时只返回主机部分。
+func splitRemoteAddr(addr net.Addr) (host, port string) {
+	if addr == nil {
+		return "", ""
+	}
+	h, p, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String(), ""
+	}
+	return h, p
 }
 
 // handleSession 处理 shell / exec 请求，并支持 PTY 与窗口大小变化。
